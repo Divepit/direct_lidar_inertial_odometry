@@ -17,7 +17,7 @@
 
     adaptive: true
 
-    pointcloud/deskew: false
+    pointcloud/deskew: true
     pointcloud/voxelize: true
 
     imu/calibration: true
