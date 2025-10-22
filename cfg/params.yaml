@@ -13,37 +13,37 @@
 /**:
   ros__parameters:
     use_sim_time: false
-    frames/odom: odom
+    frames/odom: dlio_odom
     frames/baselink: base
     frames/lidar: lidar
     frames/imu: imu
 
     map/waitUntilMove: false
     map/dense/filtered: false
-    map/sparse/leafSize: 0.2
+    map/sparse/leafSize: 0.15
 
     odom/gravity: 9.80665
-    odom/computeTimeOffset: true
+    odom/computeTimeOffset: false
 
-    odom/imu/approximateGravity: true
+    odom/imu/approximateGravity: false
     odom/imu/calibration/gyro: true
     odom/imu/calibration/accel: true
     odom/imu/calibration/time: 3.0
     odom/imu/bufferSize: 5000
 
-    odom/preprocessing/cropBoxFilter/size: 0.5
-    odom/preprocessing/voxelFilter/res: 0.2
+    odom/preprocessing/cropBoxFilter/size: 1.0
+    odom/preprocessing/voxelFilter/res: 0.1
 
-    odom/keyframe/threshD: 1.0
-    odom/keyframe/threshR: 45.0
+    odom/keyframe/threshD: 10.25
+    odom/keyframe/threshR: 15.0
 
     odom/submap/keyframe/knn: 10
     odom/submap/keyframe/kcv: 10
     odom/submap/keyframe/kcc: 10
-    odom/gicp/minNumPoints: 64
+    odom/gicp/minNumPoints: 128
     odom/gicp/kCorrespondences: 20
-    odom/gicp/maxCorrespondenceDistance: 1.25
-    odom/gicp/maxIterations: 128
+    odom/gicp/maxCorrespondenceDistance: 1.0
+    odom/gicp/maxIterations: 64
     odom/gicp/transformationEpsilon: 0.005
     odom/gicp/rotationEpsilon: 0.001
     odom/gicp/initLambdaFactor: 1e-7
@@ -55,3 +55,11 @@
     odom/geo/Kgb: 1.0
     odom/geo/abias_max: 5.0
     odom/geo/gbias_max: 0.5
+
+    # odom/geo/Kp: 2.25
+    # odom/geo/Kv: 3.0
+    # odom/geo/Kq: 6.7
+    # odom/geo/Kab: 0.1
+    # odom/geo/Kgb: 2.0
+    # odom/geo/abias_max: 5.0
+    # odom/geo/gbias_max: 0.5

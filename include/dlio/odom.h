@@ -20,7 +20,9 @@
 #include <nav_msgs/msg/path.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <tf2_ros/transform_broadcaster.h>
+#include <builtin_interfaces/msg/time.hpp>
 
 // BOOST
 #include <boost/format.hpp>
@@ -59,8 +61,13 @@ private:
 
   void publishPose();
 
-  void publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud, Eigen::Matrix4f T_cloud);
-  void publishCloud(pcl::PointCloud<PointType>::ConstPtr published_cloud, Eigen::Matrix4f T_cloud);
+  void publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud,
+                    const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
+                    const Eigen::Ref<const Eigen::Matrix4f>& T_all,
+                    double scanStamp);
+  void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
+                                    const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
+                                    const Eigen::Ref<const Eigen::Matrix4f>& T_all);
   void publishKeyframe(std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
                        pcl::PointCloud<PointType>::ConstPtr> kf, rclcpp::Time timestamp);
 
@@ -106,6 +113,10 @@ private:
   void buildKeyframesAndSubmap(State vehicle_state);
   void pauseSubmapBuildIfNeeded();
 
+  void publishPoseSnapshot();
+  void onKeyframesTrim(std::size_t removed);
+
+
   void debug();
 
   rclcpp::TimerBase::SharedPtr publish_timer;
@@ -122,6 +133,8 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr kf_pose_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr kf_cloud_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_pub;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_not_transformed_pub;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_map_pub;
 
   // TF
   std::shared_ptr<tf2_ros::TransformBroadcaster> br;
@@ -152,6 +165,8 @@ private:
   std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
   double length_traversed;
 
+  std::size_t kMaxKeyframes = 30;
+
   // Keyframes
   std::vector<std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
                         pcl::PointCloud<PointType>::ConstPtr>> keyframes;
@@ -161,7 +176,7 @@ private:
   std::mutex keyframes_mutex;
 
   // Sensor Type
-  dlio::SensorType sensor;
+  dlio::SensorType sensor = dlio::SensorType::UNKNOWN;
 
   // Frames
   std::string odom_frame;
@@ -362,5 +377,28 @@ private:
   double geo_Kgb_;
   double geo_abias_max_;
   double geo_gbias_max_;
+
+
+
+  struct PubJob {
+    pcl::PointCloud<PointType>::ConstPtr cloud;
+    Eigen::Matrix4f T_cloud;
+    Eigen::Matrix4f T_all;
+    rclcpp::Time scan_header_stamp;
+    double scanStamp;
+  };
+
+  std::thread pub_worker_;
+  std::mutex q_mtx_;
+  std::condition_variable q_cv_;
+  std::deque<PubJob> q_;
+  std::atomic_bool stop_{false};
+
+  void workerLoop();
+  void enqueuePublish(pcl::PointCloud<PointType>::ConstPtr cloud,
+                      const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
+                      const Eigen::Ref<const Eigen::Matrix4f>& T_all,
+                      double scanStamp);
+
 
 };
