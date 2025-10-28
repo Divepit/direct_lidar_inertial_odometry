@@ -43,15 +43,16 @@ def generate_launch_description():
         ],
     )
 
-    # dlio_map_node = Node(
-    #     package='direct_lidar_inertial_odometry',
-    #     executable='dlio_map_node',
-    #     output='screen',
-    #     parameters=[dlio_yaml_path, dlio_params_yaml_path, {'use_sim_time': use_sim_time}],
-    #     remappings=[
-    #         ('keyframes', 'dlio/odom_node/pointcloud/keyframe'),
-    #     ],
-    # )
+    dlio_map_node = Node(
+        package='direct_lidar_inertial_odometry',
+        executable='dlio_map_node',
+        output='screen',
+        parameters=[dlio_yaml_path, dlio_params_yaml_path, {'use_sim_time': use_sim_time}],
+        remappings=[
+            ('kf_cloud', 'dlio/odom_node/pointcloud/keyframe'),
+            ('map_pose', 'dlio/odom_node/map_pose'),
+        ],
+    )
 
     rviz_config_path = PathJoinSubstitution([current_pkg, 'launch', 'dlio.rviz'])
     rviz_node = Node(
@@ -70,6 +71,6 @@ def generate_launch_description():
         declare_imu_topic_arg,
         declare_use_sim_time_arg,
         dlio_odom_node,
-        # dlio_map_node,
+        dlio_map_node,
         rviz_node
     ])

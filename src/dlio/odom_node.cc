@@ -14,7 +14,7 @@
 
 int main(int argc, char** argv) {
 
-   mallopt(M_ARENA_MAX, 1);
+  mallopt(M_ARENA_MAX, 1);
 
   rclcpp::init(argc, argv);
   auto node = std::make_shared<dlio::OdomNode>();

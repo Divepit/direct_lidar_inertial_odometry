@@ -622,7 +622,7 @@ void dlio::OdomNode::publishKeyframe(std::pair<std::pair<Eigen::Vector3f, Eigen:
 if (this->kf_pose_ros.poses.size() >= 30) {
   this->kf_pose_ros.poses.erase(
     this->kf_pose_ros.poses.begin(),
-    this->kf_pose_ros.poses.begin() + (this->kf_pose_ros.poses.size() - 200 + 1)
+    this->kf_pose_ros.poses.begin() + (this->kf_pose_ros.poses.size() - 30 + 1)
   );
 }
 
@@ -788,7 +788,13 @@ void dlio::OdomNode::preprocessPoints() {
 
 void dlio::OdomNode::deskewPointcloud() {
 
-  pcl::PointCloud<PointType>::Ptr deskewed_scan_ = std::make_shared<pcl::PointCloud<PointType>>(1, this->original_scan->points.size());
+  // pcl::PointCloud<PointType>::Ptr deskewed_scan_ = std::make_shared<pcl::PointCloud<PointType>>(1, this->original_scan->points.size());
+
+  auto deskewed_scan_ = std::make_shared<pcl::PointCloud<PointType>>();
+  deskewed_scan_->points.resize(this->original_scan->points.size());
+  deskewed_scan_->width  = static_cast<uint32_t>(deskewed_scan_->points.size());
+  deskewed_scan_->height = 1;
+
   // deskewed_scan_->points.resize(this->original_scan->points.size());
   // individual point timestamps should be relative to this time
   double sweep_ref_time = rclcpp::Time(this->scan_header_stamp).seconds();

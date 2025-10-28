@@ -22,6 +22,11 @@
     map/dense/filtered: false
     map/sparse/leafSize: 0.15
 
+    map/crop/enabled: true       # set true to crop
+    map/crop/box_size: 20.0      # meters (edge length of cube)
+    map/crop/padding: 2.0        # meters of extra margin to reduce churn
+    map/crop/period_sec: 2.0     # crop the stored map every N seconds
+
     odom/gravity: 9.80665
     odom/computeTimeOffset: false
 

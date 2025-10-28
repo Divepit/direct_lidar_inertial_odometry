@@ -22,7 +22,7 @@ find_package(nav_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
 
 find_package(PCL REQUIRED)
-find_package( Eigen3 REQUIRED )
+find_package(Eigen3 REQUIRED )
 find_package(Threads REQUIRED)
 
 add_compile_options(-std=c++17 -O3 -mtune=native -march=native -funroll-loops -fopenmp -fopt-info-vec-optimized) #-funsafe-math-optimizations -funsafe-loop-optimizations
@@ -72,7 +72,7 @@ ament_target_dependencies(dlio_odom_node "tf2_ros" "pcl_ros" "nav_msgs" "pcl_con
 # Mapping Node
 add_executable (dlio_map_node src/dlio/map_node.cc src/dlio/map.cc)
 target_link_libraries(dlio_map_node ${PCL_LIBRARIES}  ${cpp_typesupport_target})
-ament_target_dependencies(dlio_map_node "tf2_ros" "pcl_ros" "pcl_conversions" "rclcpp")
+ament_target_dependencies(dlio_map_node "tf2_ros" "pcl_ros" "pcl_conversions" "rclcpp" "nav_msgs")
 
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME} nano_gicp nanoflann)
