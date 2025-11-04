@@ -12,33 +12,48 @@
 
 /***********************************************************************
  * BSD 3-Clause License
+ *
  * Copyright (c) 2020, SMRT-AIST
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * 3. Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived from
+ *    this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *************************************************************************/
 
 #include "dlio/dlio.h"
 #include "nano_gicp/nano_gicp.h"
 
-// ---- PH-Tree integration ----
+// ---- PH-Tree additions start ----
 #include <phtree/phtree.h>
 #include <limits>
 #include <numeric>
 #include <algorithm>
-#include <cassert>
-#include <optional>
-#include <type_traits>
-#include <cstdint>
 
 namespace ipht = ::improbable::phtree;
 
 namespace {
-
-// ================== Quantization via ConverterMultiply ==================
-// Multiplies coordinates by NANO_GICP_PHTREE_MULT and stores as ints.
-// Default: 1000 -> ~1 mm resolution if input units are meters.
-
-using Conv = ipht::ConverterMultiply<3, NANO_GICP_PHTREE_MULT, 1>;
-using Tree = ipht::PhTreeD<3, int, Conv>;
-// =======================================================================
 
 // Squared-Euclidean metric (avoids sqrt in KNN)
 template <int DIM>
@@ -54,20 +69,24 @@ struct DistSqEuclidean {
   }
 };
 
-// PH-Tree KNN filter to exclude the query's own index
+// PH-Tree v16 KNN filter must expose IsNodeValid/IsEntryValid
 struct NotSelfFilter {
   int self = -1;
 
   template <typename KEY>
-  inline bool IsNodeValid(const KEY&, int) const noexcept { return true; }
-
+  inline bool IsNodeValid(const KEY&, int) const noexcept {
+    // No pruning at node level; return true to keep search simple/fast.
+    return true;
+  }
   template <typename KEY, typename VALUE>
-  inline bool IsEntryValid(const KEY&, const VALUE& v) const noexcept { return v != self; }
+  inline bool IsEntryValid(const KEY&, const VALUE& v) const noexcept {
+    return v != self;
+  }
 };
 
-// File-local PH-Trees tied to last input clouds (lossy-converted).
-std::shared_ptr<Tree>                  g_source_tree;
-std::shared_ptr<Tree>                  g_target_tree;
+// File-local PH-Trees tied to last input clouds.
+std::shared_ptr<ipht::PhTreeD<3, int>> g_source_tree;
+std::shared_ptr<ipht::PhTreeD<3, int>> g_target_tree;
 pcl::PointCloud<PointType>::ConstPtr   g_source_cloud;
 pcl::PointCloud<PointType>::ConstPtr   g_target_cloud;
 
@@ -75,14 +94,11 @@ pcl::PointCloud<PointType>::ConstPtr   g_target_cloud;
 static std::vector<ipht::PhPointD<3>> g_source_pts;
 static std::vector<ipht::PhPointD<3>> g_target_pts;
 
-// Mask for which target indices are actually inserted into PH-Tree
-static std::vector<uint8_t>           g_target_inserted;
-
 template <typename PointT>
 void PrecomputePhPoints(const typename pcl::PointCloud<PointT>::ConstPtr& cloud,
                         std::vector<ipht::PhPointD<3>>& out) {
-  out.resize(cloud ? cloud->size() : 0);
-  if (!cloud) return;
+  if (!cloud) { out.clear(); return; }
+  out.resize(cloud->size());
   for (size_t i = 0; i < cloud->size(); ++i) {
     const auto& p = cloud->at(i);
     out[i] = ipht::PhPointD<3>{double(p.x), double(p.y), double(p.z)};
@@ -90,18 +106,9 @@ void PrecomputePhPoints(const typename pcl::PointCloud<PointT>::ConstPtr& cloud,
 }
 
 template <typename PointT>
-inline void SetInsertedMaskFromCloud(const typename pcl::PointCloud<PointT>::ConstPtr& cloud,
-                                     std::vector<uint8_t>& mask) {
-  mask.resize(cloud ? cloud->size() : 0);
-  if (!cloud) return;
-  for (size_t i = 0; i < cloud->size(); ++i) {
-    mask[i] = pcl::isFinite(cloud->at(i)) ? uint8_t{1} : uint8_t{0};
-  }
-}
-
-template <typename PointT>
-std::shared_ptr<Tree>
+std::shared_ptr<ipht::PhTreeD<3, int>>
 BuildPhTree(const typename pcl::PointCloud<PointT>::ConstPtr& cloud) {
+  using Tree = ipht::PhTreeD<3, int>;
   auto tree = std::make_shared<Tree>();
   if (!cloud) return tree;
   const int N = static_cast<int>(cloud->size());
@@ -115,7 +122,7 @@ BuildPhTree(const typename pcl::PointCloud<PointT>::ConstPtr& cloud) {
 }
 
 } // anonymous namespace
-// ---- end PH-Tree integration ----
+// ---- PH-Tree additions end ----
 
 template class nano_gicp::NanoGICP<PointType, PointType>;
 
@@ -128,9 +135,11 @@ NanoGICP<PointSource, PointTarget>::NanoGICP() {
 #else
   num_threads_ = 1;
 #endif
+
   k_correspondences_ = 20;
   reg_name_ = "NanoGICP";
   corr_dist_threshold_ = std::numeric_limits<float>::max();
+
   regularization_method_ = RegularizationMethod::PLANE;
 }
 
@@ -139,11 +148,11 @@ NanoGICP<PointSource, PointTarget>::~NanoGICP() {}
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setNumThreads(int n) {
+  num_threads_ = n;
 #ifdef _OPENMP
-  num_threads_ = (n == 0) ? omp_get_max_threads() : n;
-#else
-  (void)n;
-  num_threads_ = 1;
+  if (n == 0) {
+    num_threads_ = omp_get_max_threads();
+  }
 #endif
 }
 
@@ -165,19 +174,13 @@ void NanoGICP<PointSource, PointTarget>::setRegularizationMethod(RegularizationM
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::swapSourceAndTarget() {
   input_.swap(target_);
+  source_kdtree_.swap(target_kdtree_);
   source_covs_.swap(target_covs_);
 
   // Swap PH-Tree state as well
   std::swap(g_source_tree, g_target_tree);
   std::swap(g_source_cloud, g_target_cloud);
   std::swap(g_source_pts,  g_target_pts);
-
-  // Rebuild target-inserted mask for the new target cloud
-  if (g_target_cloud) {
-    SetInsertedMaskFromCloud<PointTarget>(g_target_cloud, g_target_inserted);
-  } else {
-    g_target_inserted.clear();
-  }
 
   correspondences_.clear();
   sq_distances_.clear();
@@ -199,50 +202,53 @@ void NanoGICP<PointSource, PointTarget>::clearTarget() {
   g_target_tree.reset();
   g_target_cloud.reset();
   g_target_pts.clear();
-  g_target_inserted.clear();
 }
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::registerInputSource(const PointCloudSourceConstPtr& cloud) {
   if (input_ == cloud) return;
   pcl::Registration<PointSource, PointTarget, Scalar>::setInputSource(cloud);
-  // Build PH-Tree + precompute keys
-  g_source_cloud = cloud;
-  g_source_tree  = BuildPhTree<PointSource>(cloud);
-  PrecomputePhPoints<PointSource>(cloud, g_source_pts);
 }
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::registerInputTarget(const PointCloudTargetConstPtr& cloud) {
   if (target_ == cloud) return;
   pcl::Registration<PointSource, PointTarget, Scalar>::setInputTarget(cloud);
-  // Build PH-Tree + precompute keys + inserted mask
-  g_target_cloud = cloud;
-  g_target_tree  = BuildPhTree<PointTarget>(cloud);
-  PrecomputePhPoints<PointTarget>(cloud, g_target_pts);
-  SetInsertedMaskFromCloud<PointTarget>(cloud, g_target_inserted);
 }
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setInputSource(const PointCloudSourceConstPtr& cloud) {
   if (input_ == cloud) return;
+
   pcl::Registration<PointSource, PointTarget, Scalar>::setInputSource(cloud);
+
+  auto source_kdtree = std::make_shared<nanoflann::KdTreeFLANN<PointSource>>();
+  source_kdtree->setInputCloud(cloud);
+  source_kdtree_ = source_kdtree;
+
   // Build PH-Tree + precompute keys
   g_source_cloud = cloud;
   g_source_tree  = BuildPhTree<PointSource>(cloud);
   PrecomputePhPoints<PointSource>(cloud, g_source_pts);
+
   source_covs_.reset();
 }
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setInputTarget(const PointCloudTargetConstPtr& cloud) {
   if (target_ == cloud) return;
+
   pcl::Registration<PointSource, PointTarget, Scalar>::setInputTarget(cloud);
-  // Build PH-Tree + precompute keys + inserted mask
+
+  auto target_kdtree = std::make_shared<nanoflann::KdTreeFLANN<PointTarget>>();
+  target_kdtree->setInputCloud(cloud);
+  target_kdtree_ = target_kdtree;
+
+  // Build PH-Tree + precompute keys
   g_target_cloud = cloud;
   g_target_tree  = BuildPhTree<PointTarget>(cloud);
   PrecomputePhPoints<PointTarget>(cloud, g_target_pts);
-  SetInsertedMaskFromCloud<PointTarget>(cloud, g_target_inserted);
+
   target_covs_.reset();
 }
 
@@ -258,11 +264,9 @@ void NanoGICP<PointSource, PointTarget>::setTargetCovariances(const std::shared_
 
 template <typename PointSource, typename PointTarget>
 bool NanoGICP<PointSource, PointTarget>::calculateSourceCovariances() {
-  assert(input_ && "input_ must be set before calculateSourceCovariances");
-  assert(g_source_tree && g_source_cloud && "PH-Tree for source must be built");
   auto source_covs = std::make_shared<CovarianceList>();
   auto source_density = std::make_shared<float>();
-  bool ret = this->template calculate_covariances<PointSource>(input_, *source_covs, *source_density);
+  bool ret = calculate_covariances(input_, *source_kdtree_, *source_covs, *source_density);
   source_covs_ = source_covs;
   source_density_ = *source_density;
   return ret;
@@ -270,11 +274,9 @@ bool NanoGICP<PointSource, PointTarget>::calculateSourceCovariances() {
 
 template <typename PointSource, typename PointTarget>
 bool NanoGICP<PointSource, PointTarget>::calculateTargetCovariances() {
-  assert(target_ && "target_ must be set before calculateTargetCovariances");
-  assert(g_target_tree && g_target_cloud && "PH-Tree for target must be built");
   auto target_covs = std::make_shared<CovarianceList>();
   auto target_density = std::make_shared<float>();
-  bool ret = this->template calculate_covariances<PointTarget>(target_, *target_covs, *target_density);
+  bool ret = calculate_covariances(target_, *target_kdtree_, *target_covs, *target_density);
   target_covs_ = target_covs;
   target_density_ = *target_density;
   return ret;
@@ -291,37 +293,28 @@ void NanoGICP<PointSource, PointTarget>::computeTransformation(PointCloudSource&
   LsqRegistration<PointSource, PointTarget>::computeTransformation(output, guess);
 }
 
-/* ------------------------- KNN reuse config ------------------------- */
-#ifndef NANO_GICP_TRY_CACHE_FIRST
-#define NANO_GICP_TRY_CACHE_FIRST 1
-#endif
-/* ------------------------------------------------------------------- */
-
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::update_correspondences(const Eigen::Isometry3d& trans) {
   assert(source_covs_ && source_covs_->size() == input_->size());
   assert(target_covs_ && target_covs_->size() == target_->size());
-  assert(g_target_tree && g_target_cloud);
-  auto* tree = g_target_tree.get();
 
   Eigen::Isometry3f trans_f = trans.cast<float>();
 
   const int N = static_cast<int>(input_->size());
   const float corr_sq = static_cast<float>(corr_dist_threshold_ * corr_dist_threshold_);
 
-  // Keep previous matches/distances for cache-fast-path on subsequent iterations.
-  const float INF_F = std::numeric_limits<float>::infinity();
-  if ((int)correspondences_.size() != N) {
-    correspondences_.resize(N, -1);
-  }
-  if ((int)sq_distances_.size() != N) {
-    sq_distances_.resize(N, INF_F);
-  }
+  correspondences_.resize(N);
+  sq_distances_.resize(N);
   mahalanobis_.resize(N);
 
-#ifdef _OPENMP
+  // Ensure target tree exists (outside OMP)
+  if (!g_target_tree && g_target_cloud) {
+    g_target_tree = BuildPhTree<PointTarget>(g_target_cloud);
+  }
+  auto* tree = g_target_tree.get();
+  auto  tgt  = g_target_cloud;
+
 #pragma omp parallel for num_threads(num_threads_) schedule(static)
-#endif
   for (int i = 0; i < N; ++i) {
     // Transform query point
     PointTarget pt;
@@ -329,43 +322,22 @@ void NanoGICP<PointSource, PointTarget>::update_correspondences(const Eigen::Iso
     const ipht::PhPointD<3> q{double(pt.x), double(pt.y), double(pt.z)};
 
     int   nn_idx = -1;
-    float nn_d2  = INF_F;
+    float nn_d2  = std::numeric_limits<float>::infinity();
 
-#if NANO_GICP_TRY_CACHE_FIRST
-    // ---- Fast path: reuse previous correspondence if still valid ----
-    const int prev_idx = (i < (int)correspondences_.size()) ? correspondences_[i] : -1;
-    const bool prev_idx_valid =
-        (prev_idx >= 0 && prev_idx < (int)g_target_pts.size() &&
-         (g_target_inserted.size() == g_target_pts.size() ? g_target_inserted[prev_idx] != 0 : true));
-    if (prev_idx_valid) {
-      const auto& tpt = g_target_pts[prev_idx];
-      const double dx = q[0] - tpt[0];
-      const double dy = q[1] - tpt[1];
-      const double dz = q[2] - tpt[2];
-      const float d2_to_prev = static_cast<float>(dx*dx + dy*dy + dz*dz);
-      const float prev_d2    = (i < (int)sq_distances_.size()) ? sq_distances_[i] : INF_F;
-
-      // Accept if still under threshold and not exploding vs last iteration.
-      const float slack = 1.44f; // (1.2)^2
-      if (d2_to_prev < corr_sq && d2_to_prev <= prev_d2 * slack) {
-        nn_idx = prev_idx;
-        nn_d2  = d2_to_prev;
-      }
-    }
-#endif
-
-    // ---- Fallback: 1-NN via PH-Tree ----
-    if (nn_idx < 0) {
+    if (tree && tgt) {
       auto it = tree->begin_knn_query(1, q, DistSqEuclidean<3>{});
       if (it != tree->end()) {
         nn_idx = *it;
-        nn_d2  = static_cast<float>(it.distance()); // squared distance
+        nn_d2  = static_cast<float>(it.distance()); // already squared
       }
     }
 
     sq_distances_[i]    = nn_d2;
     correspondences_[i] = (nn_idx >= 0 && nn_d2 < corr_sq) ? nn_idx : -1;
-    if (correspondences_[i] < 0) continue;
+
+    if (correspondences_[i] < 0) {
+      continue;
+    }
 
     const int target_index = correspondences_[i];
     const auto& cov_A = (*source_covs_)[i];
@@ -378,14 +350,13 @@ void NanoGICP<PointSource, PointTarget>::update_correspondences(const Eigen::Iso
     mahalanobis_[i](3, 3) = 0.0f;
   }
 
+  // Keep original semantics
   num_correspondences = std::count_if(correspondences_.begin(), correspondences_.end(),
-                                      [](int c){ return c >= 0; });
+                                      [](int c){ return c > 0; });
 }
 
 template <typename PointSource, typename PointTarget>
-double NanoGICP<PointSource, PointTarget>::linearize(const Eigen::Isometry3d& trans,
-                                                     Eigen::Matrix<double, 6, 6>* H,
-                                                     Eigen::Matrix<double, 6, 1>* b) {
+double NanoGICP<PointSource, PointTarget>::linearize(const Eigen::Isometry3d& trans, Eigen::Matrix<double, 6, 6>* H, Eigen::Matrix<double, 6, 1>* b) {
   update_correspondences(trans);
 
   double sum_errors = 0.0;
@@ -396,9 +367,7 @@ double NanoGICP<PointSource, PointTarget>::linearize(const Eigen::Isometry3d& tr
     bs[i].setZero();
   }
 
-#ifdef _OPENMP
 #pragma omp parallel for num_threads(num_threads_) reduction(+ : sum_errors) schedule(static)
-#endif
   for (int i = 0; i < input_->size(); i++) {
     int target_index = correspondences_[i];
     if (target_index < 0) continue;
@@ -422,13 +391,8 @@ double NanoGICP<PointSource, PointTarget>::linearize(const Eigen::Isometry3d& tr
     Eigen::Matrix<double, 6, 6> Hi = jlossexp.transpose() * mahalanobis_[i] * jlossexp;
     Eigen::Matrix<double, 6, 1> bi = jlossexp.transpose() * mahalanobis_[i] * error;
 
-#ifdef _OPENMP
     Hs[omp_get_thread_num()] += Hi;
     bs[omp_get_thread_num()] += bi;
-#else
-    Hs[0] += Hi;
-    bs[0] += bi;
-#endif
   }
 
   if (H && b) {
@@ -447,9 +411,7 @@ template <typename PointSource, typename PointTarget>
 double NanoGICP<PointSource, PointTarget>::compute_error(const Eigen::Isometry3d& trans) {
   double sum_errors = 0.0;
 
-#ifdef _OPENMP
 #pragma omp parallel for num_threads(num_threads_) reduction(+ : sum_errors) schedule(static)
-#endif
   for (int i = 0; i < input_->size(); i++) {
     int target_index = correspondences_[i];
     if (target_index < 0) continue;
@@ -466,132 +428,38 @@ double NanoGICP<PointSource, PointTarget>::compute_error(const Eigen::Isometry3d
   return sum_errors;
 }
 
-// ====================== Delta-update API (impl) ======================
-
-template <typename PointSource, typename PointTarget>
-void NanoGICP<PointSource, PointTarget>::initEmptyTarget() {
-  // Fresh empty target buffers (exposed as const)
-  target_       = std::make_shared<PointCloudTarget>();
-  target_covs_  = std::make_shared<CovarianceList>();
-
-  // Fresh PH-Tree and key cache
-  g_target_tree  = std::make_shared<Tree>();
-  g_target_pts.clear();
-  g_target_inserted.clear();
-
-  // Make pointer-identity consistent for later assertions
-  g_target_cloud = target_;
-}
-
-template <typename PointSource, typename PointTarget>
-int NanoGICP<PointSource, PointTarget>::appendTargetBlock(const PointCloudTarget& cloud_block,
-                                                          const CovarianceList&  covs_block) {
-  // Ensure PH-Tree infra exists
-  if (!g_target_tree)  g_target_tree  = std::make_shared<Tree>();
-
-  // Base index equals current target size (or 0 if none)
-  const int base = target_ ? static_cast<int>(target_->size()) : 0;
-  const int n    = static_cast<int>(cloud_block.size());
-  assert(static_cast<int>(covs_block.size()) == n && "covariance block size must match cloud block size");
-
-  // --- Build a mutable merged cloud (do NOT write through ConstPtr) ---
-  auto merged = std::make_shared<PointCloudTarget>();
-  if (target_) {
-    *merged = *target_;  // copy existing
-  }
-  // Append points
-  merged->points.insert(merged->points.end(),
-                        cloud_block.points.begin(), cloud_block.points.end());
-  merged->width    = static_cast<uint32_t>(merged->points.size());
-  merged->height   = 1;
-  merged->is_dense = true;
-
-  // Expose as const & keep identity for PH helpers/asserts
-  target_        = merged;
-  g_target_cloud = target_;
-
-  // --- Covariances: same const-safety trick ---
-  auto covs_new = std::make_shared<CovarianceList>();
-  if (target_covs_) {
-    covs_new->insert(covs_new->end(), target_covs_->begin(), target_covs_->end());
-  }
-  covs_new->insert(covs_new->end(), covs_block.begin(), covs_block.end());
-  target_covs_ = covs_new;
-
-  // --- PH-Tree: append keys and insert only the new ones ---
-  g_target_pts.reserve(g_target_pts.size() + n);
-  g_target_inserted.reserve(g_target_inserted.size() + n);
-  for (int i = 0; i < n; ++i) {
-    const auto& p = cloud_block[i];
-    if (!pcl::isFinite(p)) {
-      // keep placeholder for index stability; mark not-inserted
-      g_target_pts.emplace_back(ipht::PhPointD<3>{0.0, 0.0, 0.0});
-      g_target_inserted.emplace_back(uint8_t{0});
-      continue;
-    }
-    ipht::PhPointD<3> key{double(p.x), double(p.y), double(p.z)};
-    g_target_pts.emplace_back(key);
-    g_target_inserted.emplace_back(uint8_t{1});
-    g_target_tree->try_emplace(key, base + i);
-  }
-
-  return base;
-}
-
-template <typename PointSource, typename PointTarget>
-void NanoGICP<PointSource, PointTarget>::eraseTargetRange(int base, int count) {
-  if (!g_target_tree) return;
-  if (base < 0 || count <= 0) return;
-  const int end = base + count;
-  if (end > static_cast<int>(g_target_pts.size())) return; // nothing to do or inconsistent
-
-  // Remove from PH-Tree only (arrays remain; indices stay stable with 'holes')
-  for (int i = base; i < end; ++i) {
-    const bool was_inserted =
-        (g_target_inserted.size() == g_target_pts.size()) ? (g_target_inserted[i] != 0) : true;
-    if (was_inserted) {
-      const ipht::PhPointD<3>& key = g_target_pts[i];
-      g_target_tree->erase(key);
-      if (g_target_inserted.size() == g_target_pts.size()) {
-        g_target_inserted[i] = 0;
-      }
-    }
-  }
-}
-
-template <typename PointSource, typename PointTarget>
-size_t NanoGICP<PointSource, PointTarget>::targetSize() const {
-  return target_ ? target_->size() : 0;
-}
-
-// =====================================================================
-
 template <typename PointSource, typename PointTarget>
 template <typename PointT>
 bool NanoGICP<PointSource, PointTarget>::calculate_covariances(
   const typename pcl::PointCloud<PointT>::ConstPtr& cloud,
+  const nanoflann::KdTreeFLANN<PointT>& /*kdtree unused*/,
   CovarianceList& covariances,
   float& density) {
-
-  assert(cloud && "cloud must be valid");
-  const bool is_source = (cloud.get() == g_source_cloud.get());
-  const bool is_target = (cloud.get() == g_target_cloud.get());
-  assert((is_source || is_target) && "cloud must match source or target currently registered");
-
-  std::shared_ptr<Tree> tree = is_source ? g_source_tree : g_target_tree;
-  const std::vector<ipht::PhPointD<3>>& pts = is_source ? g_source_pts  : g_target_pts;
-
-  assert(tree && "PH-Tree must be built");
-  assert(pts.size() == cloud->size());
 
   covariances.resize(cloud->size());
   const int N = static_cast<int>(cloud->size());
   const int K = std::max(1, k_correspondences_);
   float sum_k_sq_distances = 0.0f;
 
-#ifdef _OPENMP
+  // Resolve PH-Tree and precomputed keys once
+  std::shared_ptr<ipht::PhTreeD<3,int>> tree;
+  const std::vector<ipht::PhPointD<3>>* pts = nullptr;
+
+  if (cloud.get() == g_source_cloud.get()) {
+    if (!g_source_tree) g_source_tree = BuildPhTree<PointT>(cloud);
+    tree = g_source_tree; pts = &g_source_pts;
+  } else if (cloud.get() == g_target_cloud.get()) {
+    if (!g_target_tree) g_target_tree = BuildPhTree<PointT>(cloud);
+    tree = g_target_tree; pts = &g_target_pts;
+  } else {
+    // Rare fallback: temporary tree + local precompute
+    tree = BuildPhTree<PointT>(cloud);
+    static thread_local std::vector<ipht::PhPointD<3>> local_pts;
+    PrecomputePhPoints<PointT>(cloud, local_pts);
+    pts = &local_pts;
+  }
+
 #pragma omp parallel num_threads(num_threads_)
-#endif
   {
     // Per-thread buffers
     std::vector<int>   idx; idx.reserve(K);
@@ -600,11 +468,9 @@ bool NanoGICP<PointSource, PointTarget>::calculate_covariances(
 
     float thread_sum = 0.0f;
 
-#ifdef _OPENMP
 #pragma omp for schedule(static) nowait
-#endif
     for (int i = 0; i < N; ++i) {
-      const ipht::PhPointD<3>& q = pts[i];
+      const ipht::PhPointD<3>& q = (*pts)[i];
 
       idx.clear(); d2.clear();
       // self first
@@ -635,7 +501,7 @@ bool NanoGICP<PointSource, PointTarget>::calculate_covariances(
       neighbors.colwise() -= neighbors.rowwise().mean().eval();
       Eigen::Matrix4d cov = neighbors * neighbors.transpose() / static_cast<double>(K);
 
-      // Regularization (same as original)
+      // Regularization (unchanged)
       if (regularization_method_ == RegularizationMethod::NONE) {
         covariances[i] = cov;
       } else if (regularization_method_ == RegularizationMethod::FROBENIUS) {
@@ -666,9 +532,7 @@ bool NanoGICP<PointSource, PointTarget>::calculate_covariances(
       }
     } // for i
 
-#ifdef _OPENMP
 #pragma omp atomic
-#endif
     sum_k_sq_distances += thread_sum;
   } // omp parallel
 

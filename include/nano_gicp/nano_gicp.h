@@ -15,31 +15,6 @@
  *
  * Copyright (c) 2020, SMRT-AIST
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice, this
- *    list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * 3. Neither the name of the copyright holder nor the names of its
- *    contributors may be used to endorse or promote products derived from
- *    this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
- * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *************************************************************************/
 
 #pragma once
@@ -51,28 +26,35 @@
 #include <pcl/point_cloud.h>
 #include <pcl/registration/registration.h>
 
+#include <memory>
+#include <vector>
+
 #include "nano_gicp/lsq_registration.h"
-#include "nano_gicp/nanoflann_adaptor.h"
 
 namespace nano_gicp {
 
-typedef std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> CovarianceList;
+// If not provided by the build, define a sensible default.
+// (The .cc uses #ifndef too, so only one definition wins.)
+#define NANO_GICP_PHTREE_MULT 1000
+
+using CovarianceList =
+    std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>>;
 
 enum class RegularizationMethod { NONE, MIN_EIG, NORMALIZED_MIN_EIG, PLANE, FROBENIUS };
 
 template<typename PointSource, typename PointTarget>
 class NanoGICP : public LsqRegistration<PointSource, PointTarget> {
 public:
-  using Scalar = float;
+  using Scalar  = float;
   using Matrix4 = typename pcl::Registration<PointSource, PointTarget, Scalar>::Matrix4;
 
-  using PointCloudSource = typename pcl::Registration<PointSource, PointTarget, Scalar>::PointCloudSource;
-  using PointCloudSourcePtr = typename PointCloudSource::Ptr;
-  using PointCloudSourceConstPtr = typename PointCloudSource::ConstPtr;
+  using PointCloudSource        = typename pcl::Registration<PointSource, PointTarget, Scalar>::PointCloudSource;
+  using PointCloudSourcePtr     = typename PointCloudSource::Ptr;
+  using PointCloudSourceConstPtr= typename PointCloudSource::ConstPtr;
 
-  using PointCloudTarget = typename pcl::Registration<PointSource, PointTarget, Scalar>::PointCloudTarget;
-  using PointCloudTargetPtr = typename PointCloudTarget::Ptr;
-  using PointCloudTargetConstPtr = typename PointCloudTarget::ConstPtr;
+  using PointCloudTarget        = typename pcl::Registration<PointSource, PointTarget, Scalar>::PointCloudTarget;
+  using PointCloudTargetPtr     = typename PointCloudTarget::Ptr;
+  using PointCloudTargetConstPtr= typename PointCloudTarget::ConstPtr;
 
 protected:
   using pcl::Registration<PointSource, PointTarget, Scalar>::reg_name_;
@@ -82,71 +64,77 @@ protected:
 
 public:
   NanoGICP();
-  virtual ~NanoGICP() override;
+  ~NanoGICP() override;
 
   void setNumThreads(int n);
   void setCorrespondenceRandomness(int k);
   void setMaxCorrespondenceDistance(double corr);
   void setRegularizationMethod(RegularizationMethod method);
 
-  virtual void swapSourceAndTarget() override;
-  virtual void clearSource() override;
-  virtual void clearTarget() override;
+  void swapSourceAndTarget() override;
+  void clearSource() override;
+  void clearTarget() override;
 
-  virtual void setInputSource(const PointCloudSourceConstPtr& cloud) override;
-  virtual void setSourceCovariances(const std::shared_ptr<const CovarianceList>& covs);
-  virtual void setInputTarget(const PointCloudTargetConstPtr& cloud) override;
-  virtual void setTargetCovariances(const std::shared_ptr<const CovarianceList>& covs);
+  void setInputSource(const PointCloudSourceConstPtr& cloud) override;
+  void setSourceCovariances(const std::shared_ptr<const CovarianceList>& covs);
+  void setInputTarget(const PointCloudTargetConstPtr& cloud) override;
+  void setTargetCovariances(const std::shared_ptr<const CovarianceList>& covs);
 
-  virtual void registerInputSource(const PointCloudSourceConstPtr& cloud);
-  virtual void registerInputTarget(const PointCloudTargetConstPtr& cloud);
+  // Optional full (re)builders that also prep the PH-Tree
+  void registerInputSource(const PointCloudSourceConstPtr& cloud);
+  void registerInputTarget(const PointCloudTargetConstPtr& cloud);
 
-  virtual bool calculateSourceCovariances();
-  virtual bool calculateTargetCovariances();
+  bool calculateSourceCovariances();
+  bool calculateTargetCovariances();
 
-  std::shared_ptr<const CovarianceList> getSourceCovariances() const {
-    return source_covs_;
-  }
+  std::shared_ptr<const CovarianceList> getSourceCovariances() const { return source_covs_; }
+  std::shared_ptr<const CovarianceList> getTargetCovariances() const { return target_covs_; }
 
-  std::shared_ptr<const CovarianceList> getTargetCovariances() const {
-    return target_covs_;
-  }
+  // -------- Delta-update API for target (submap) --------
+  void   initEmptyTarget();
+  int    appendTargetBlock(const PointCloudTarget& cloud_block,
+                           const CovarianceList&   covs_block);
+  void   eraseTargetRange(int base, int count);
+  size_t targetSize() const;
+  // ------------------------------------------------------
 
-  virtual void update_correspondences(const Eigen::Isometry3d& trans);
+  void update_correspondences(const Eigen::Isometry3d& trans);
 
 protected:
-  virtual void computeTransformation(PointCloudSource& output, const Matrix4& guess) override;
+  void   computeTransformation(PointCloudSource& output, const Matrix4& guess) override;
+  double linearize(const Eigen::Isometry3d& trans,
+                   Eigen::Matrix<double, 6, 6>* H,
+                   Eigen::Matrix<double, 6, 1>* b) override;
+  double compute_error(const Eigen::Isometry3d& trans) override;
 
-  virtual double linearize(const Eigen::Isometry3d& trans, Eigen::Matrix<double, 6, 6>* H, Eigen::Matrix<double, 6, 1>* b) override;
-
-  virtual double compute_error(const Eigen::Isometry3d& trans) override;
-
-  template<typename PointT>
-  bool calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud, const nanoflann::KdTreeFLANN<PointT>& kdtree, CovarianceList& covariances, float& density);
+  template <typename PointT>
+  bool calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud,
+                             CovarianceList& covariances,
+                             float& density);
 
 public:
-  std::shared_ptr<const nanoflann::KdTreeFLANN<PointSource>> source_kdtree_;
-  std::shared_ptr<const nanoflann::KdTreeFLANN<PointTarget>> target_kdtree_;
-
   std::shared_ptr<const CovarianceList> source_covs_;
   std::shared_ptr<const CovarianceList> target_covs_;
 
-  float source_density_;
-  float target_density_;
+  float  source_density_ = 0.0f;
+  float  target_density_ = 0.0f;
+  int    num_correspondences = 0;
 
-  int num_correspondences;
+  // Helper: effective spatial resolution implied by ConverterMultiply.
+  static constexpr int kPhTreeMultiplier = NANO_GICP_PHTREE_MULT;
+  static constexpr double ph_tree_resolution_m() {
+    return 1.0 / static_cast<double>(kPhTreeMultiplier);
+  }
 
 protected:
-  int num_threads_;
-  int k_correspondences_;
-  double corr_dist_threshold_;
+  int    num_threads_          = 1;
+  int    k_correspondences_    = 10;
+  double corr_dist_threshold_  = 0.1;
+  RegularizationMethod regularization_method_ = RegularizationMethod::PLANE;
 
-  RegularizationMethod regularization_method_;
-
-  CovarianceList mahalanobis_;
-
-  std::vector<int> correspondences_;
-  std::vector<float> sq_distances_;
+  CovarianceList        mahalanobis_;     // per-correspondence (RCR)^-1
+  std::vector<int>      correspondences_; // size = input_->size()
+  std::vector<float>    sq_distances_;    // squared Euclidean dists
 };
-}  // namespace nano_gicp
 
+}  // namespace nano_gicp

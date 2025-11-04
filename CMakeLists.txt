@@ -25,7 +25,10 @@ find_package(PCL REQUIRED)
 find_package(Eigen3 REQUIRED )
 find_package(Threads REQUIRED)
 
-add_compile_options(-std=c++17 -O3 -mtune=native -march=native -funroll-loops -fopenmp -fopt-info-vec-optimized) #-funsafe-math-optimizations -funsafe-loop-optimizations
+find_package(phtree CONFIG REQUIRED)
+
+# add_compile_options(-std=c++17 -O3)
+add_compile_options(-std=c++17 -O3 -mtune=native -march=native -funroll-loops -fopenmp -fopt-info-vec-optimized -DNDEBUG) #-funsafe-math-optimizations -funsafe-loop-optimizations
 set(CMAKE_BUILD_TYPE "Release")
 set(CMAKE_CXX_STANDARD 17)
 
@@ -53,7 +56,7 @@ include_directories(SYSTEM)
 add_library(nanoflann STATIC
   src/nano_gicp/nanoflann.cc
 )
-target_link_libraries(nanoflann ${PCL_LIBRARIES})
+target_link_libraries(nanoflann ${PCL_LIBRARIES} phtree::phtree)
 ament_target_dependencies(nanoflann)
 
 # NanoGICP
@@ -61,17 +64,17 @@ add_library(nano_gicp STATIC
   src/nano_gicp/lsq_registration.cc
   src/nano_gicp/nano_gicp.cc
 )
-target_link_libraries(nano_gicp ${PCL_LIBRARIES} ${OpenMP_LIBS} nanoflann)
+target_link_libraries(nano_gicp ${PCL_LIBRARIES} ${OpenMP_LIBS} nanoflann phtree::phtree)
 ament_target_dependencies(nano_gicp)
 
 # Odometry Node
 add_executable(dlio_odom_node src/dlio/odom_node.cc src/dlio/odom.cc)
-target_link_libraries(dlio_odom_node ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp)
+target_link_libraries(dlio_odom_node ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp phtree::phtree)
 ament_target_dependencies(dlio_odom_node "tf2_ros" "pcl_ros" "nav_msgs" "pcl_conversions" "rclcpp" "sensor_msgs" "geometry_msgs")
 
 # Mapping Node
 add_executable (dlio_map_node src/dlio/map_node.cc src/dlio/map.cc)
-target_link_libraries(dlio_map_node ${PCL_LIBRARIES}  ${cpp_typesupport_target})
+target_link_libraries(dlio_map_node ${PCL_LIBRARIES}  ${cpp_typesupport_target} phtree::phtree)
 ament_target_dependencies(dlio_map_node "tf2_ros" "pcl_ros" "pcl_conversions" "rclcpp" "nav_msgs")
 
 ament_export_include_directories(include)

@@ -11,6 +11,7 @@
  ***********************************************************/
 
 #include "dlio/dlio.h"
+#include <phtree/phtree.h>
 
 // ROS
 #include "rclcpp/rclcpp.hpp"
@@ -40,6 +41,8 @@
 #include <pcl/surface/convex_hull.h>
 #include <pcl_conversions/pcl_conversions.h>
 
+#include <unordered_map>   // <-- added
+
 class dlio::OdomNode: public rclcpp::Node {
 
 public:
@@ -66,8 +69,8 @@ private:
                     const Eigen::Ref<const Eigen::Matrix4f>& T_all,
                     double scanStamp);
   void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
-                                    const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
-                                    const Eigen::Ref<const Eigen::Matrix4f>& T_all);
+                    const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
+                    const Eigen::Ref<const Eigen::Matrix4f>& T_all);
   void publishKeyframe(std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
                        pcl::PointCloud<PointType>::ConstPtr> kf, rclcpp::Time timestamp);
 
@@ -116,6 +119,12 @@ private:
   void publishPoseSnapshot();
   void onKeyframesTrim(std::size_t removed);
 
+  // ---- GICP delta-target helpers (new) ----
+  struct TargetBlock { int base = 0; int count = 0; };
+  void applySubmapDeltaToGICP();           // add/remove per-keyframe blocks
+  void rebuildGicpTargetFromSelection();   // full compact rebuild from submap selection
+  void recalcActiveTargetPointCount();     // housekeeping
+  // ----------------------------------------
 
   void debug();
 
@@ -203,12 +212,17 @@ private:
   std::vector<int> keyframe_concave;
 
   // Submap
+  // (cloud & normals kept for backwards compatibility / optional publishing)
   pcl::PointCloud<PointType>::ConstPtr submap_cloud;
   std::shared_ptr<const nano_gicp::CovarianceList> submap_normals;
-  std::shared_ptr<const nanoflann::KdTreeFLANN<PointType>> submap_kdtree;
 
   std::vector<int> submap_kf_idx_curr;
   std::vector<int> submap_kf_idx_prev;
+
+  // ---- Delta-target state (new) ----
+  std::unordered_map<int, TargetBlock> submap_blocks_by_kf_;
+  size_t active_target_points_ = 0;
+  // ----------------------------------
 
   bool new_submap_is_ready;
   std::future<void> submap_future;
@@ -399,6 +413,4 @@ private:
                       const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
                       const Eigen::Ref<const Eigen::Matrix4f>& T_all,
                       double scanStamp);
-
-
 };
