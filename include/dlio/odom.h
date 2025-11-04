@@ -22,7 +22,9 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <tf2_ros/transform_broadcaster.h>
+#include <visualization_msgs/msg/marker.hpp>
 #include <builtin_interfaces/msg/time.hpp>
+#include <tf2/LinearMath/Quaternion.h>
 
 // BOOST
 #include <boost/format.hpp>
@@ -115,7 +117,16 @@ private:
 
   void publishPoseSnapshot();
   void onKeyframesTrim(std::size_t removed);
-
+  // Velocity markers
+  void publishVelocityMarkers(const rclcpp::Time& stamp,
+                              const Eigen::Vector3f& vlin_b,
+                              const Eigen::Vector3f& vang_b);
+  void createLinVelocityMarker(const std::string& frame_id, const rclcpp::Time& stamp,
+                               const Eigen::Vector3f& v_b,
+                               visualization_msgs::msg::Marker& out);
+  void createAngularVelocityMarker(const std::string& frame_id, const rclcpp::Time& stamp,
+                                   const Eigen::Vector3f& w_b,
+                                   visualization_msgs::msg::Marker& out);
 
   void debug();
 
@@ -135,6 +146,9 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_not_transformed_pub;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_map_pub;
+
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr pub_lin_vel_marker_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr pub_ang_vel_marker_;
 
   // TF
   std::shared_ptr<tf2_ros::TransformBroadcaster> br;
@@ -378,6 +392,13 @@ private:
   double geo_abias_max_;
   double geo_gbias_max_;
 
+  bool   viz_vel_markers_ = true;
+  double viz_lin_gain_ = 1.0;              // [m per (m/s)] arrow length gain
+  double viz_ang_radius_gain_ = 1.0;       // [m per (rad/s)]
+  double viz_ang_radius_min_ = 0.1;
+  double viz_ang_radius_max_ = 1.0;
+  double viz_disc_thickness_ = 0.01;        // [m]
+  double viz_marker_lifetime_ = 1.0;       // [s]
 
 
   struct PubJob {

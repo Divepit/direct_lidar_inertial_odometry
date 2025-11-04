@@ -30,7 +30,7 @@
     odom/gravity: 9.80665
     odom/computeTimeOffset: false
 
-    odom/imu/approximateGravity: false
+    odom/imu/approximateGravity: true
     odom/imu/calibration/gyro: true
     odom/imu/calibration/accel: true
     odom/imu/calibration/time: 3.0
@@ -61,10 +61,11 @@
     odom/geo/abias_max: 5.0
     odom/geo/gbias_max: 0.5
 
-    # odom/geo/Kp: 2.25
-    # odom/geo/Kv: 3.0
-    # odom/geo/Kq: 6.7
-    # odom/geo/Kab: 0.1
-    # odom/geo/Kgb: 2.0
-    # odom/geo/abias_max: 5.0
-    # odom/geo/gbias_max: 0.5
+    # Visualization (velocity markers)
+    viz/vel_marker/enabled: true
+    viz/vel_marker/scale_lin: 0.5
+    viz/vel_marker/ang/radius_gain: 0.20
+    viz/vel_marker/ang/r_min: 0.10
+    viz/vel_marker/ang/r_max: 0.50
+    viz/vel_marker/thickness: 0.03
+    viz/vel_marker/lifetime: 0.10

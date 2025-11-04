@@ -76,7 +76,11 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->br = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
 
-  pub_worker_ = std::thread([this]{ workerLoop(); });
+  // Velocity markers
+  this->pub_lin_vel_marker_ = this->create_publisher<visualization_msgs::msg::Marker>("markers/velocity_linear", best_effort_qos);
+  this->pub_ang_vel_marker_ = this->create_publisher<visualization_msgs::msg::Marker>("markers/velocity_angular", best_effort_qos);
+
+  this->pub_worker_ = std::thread([this]{ workerLoop(); });
 
   {
     std::lock_guard<decltype(this->keyframes_mutex)> lock(this->keyframes_mutex);
@@ -374,6 +378,16 @@ void dlio::OdomNode::getParams() {
   // --- Bias anti-windup clamps (pick from your IMU datasheet ranges) ---
   dlio::declare_param(this, "odom/geo/abias_max",       this->geo_abias_max_,       1.5);  // [m/s^2]
   dlio::declare_param(this, "odom/geo/gbias_max",       this->geo_gbias_max_,       0.30); // [rad/s]
+
+  // Visualization (velocity markers)
+  dlio::declare_param(this, "viz/vel_marker/enabled",        this->viz_vel_markers_,      true);
+  dlio::declare_param(this, "viz/vel_marker/scale_lin",      this->viz_lin_gain_,         0.5);   // arrow length gain
+  dlio::declare_param(this, "viz/vel_marker/ang/radius_gain",this->viz_ang_radius_gain_,  0.20);
+  dlio::declare_param(this, "viz/vel_marker/ang/r_min",      this->viz_ang_radius_min_,   0.10);
+  dlio::declare_param(this, "viz/vel_marker/ang/r_max",      this->viz_ang_radius_max_,   0.50);
+  dlio::declare_param(this, "viz/vel_marker/thickness",      this->viz_disc_thickness_,   0.03);
+  dlio::declare_param(this, "viz/vel_marker/lifetime",       this->viz_marker_lifetime_,  0.10);
+
 }
 
 void dlio::OdomNode::start() {
@@ -1281,6 +1295,146 @@ void dlio::OdomNode::publishPoseSnapshot() {
   pose.pose.orientation.z = q.z();
 
   this->pose_pub->publish(pose);
+
+  this->publishVelocityMarkers(stamp, vlin_b, vang_b);
+}
+
+void dlio::OdomNode::publishVelocityMarkers(const rclcpp::Time& stamp,
+                                            const Eigen::Vector3f& vlin_b,
+                                            const Eigen::Vector3f& vang_b) {
+  if (!viz_vel_markers_) return;
+
+  visualization_msgs::msg::Marker m_lin, m_ang;
+  
+  createLinVelocityMarker(this->baselink_frame, stamp, vlin_b, m_lin);
+  createAngularVelocityMarker(this->baselink_frame, stamp, vang_b, m_ang);
+
+  if (this->pub_lin_vel_marker_ && this->pub_lin_vel_marker_->get_subscription_count() > 0) {
+    this->pub_lin_vel_marker_->publish(m_lin);
+  }
+  if (this->pub_ang_vel_marker_ && this->pub_ang_vel_marker_->get_subscription_count() > 0) {
+    this->pub_ang_vel_marker_->publish(m_ang);
+  }
+}
+
+void dlio::OdomNode::createLinVelocityMarker(const std::string& frame_id, const rclcpp::Time& stamp,
+                                             const Eigen::Vector3f& v_b,
+                                             visualization_msgs::msg::Marker& marker) {
+  // Arrow
+  marker.header.frame_id = frame_id;
+  marker.header.stamp    = stamp;
+  marker.id   = 0;
+  marker.type = visualization_msgs::msg::Marker::ARROW;
+  marker.action = visualization_msgs::msg::Marker::ADD;
+
+  // Scale and Color
+  marker.scale.x = 0.1;  // shaft diameter
+  marker.scale.y = 0.2;  // head diameter
+  marker.scale.z = 0.2;  // head length
+  marker.color.a = 1.0;
+  marker.color.r = 1.0;
+  marker.color.g = 1.0;
+  marker.color.b = 0.0;
+
+  // Define Arrow through start and end point
+  geometry_msgs::msg::Point startPoint, endPoint;
+  startPoint.x = 0.0;  // origin
+  startPoint.y = 0.0;  // origin
+  startPoint.z = 0.0;  // 0 meter above origin
+  endPoint.x = startPoint.x + static_cast<double>(v_b.x());
+  endPoint.y = startPoint.y + static_cast<double>(v_b.y());
+  endPoint.z = startPoint.z + static_cast<double>(v_b.z());
+  marker.points.clear();
+  marker.points.push_back(startPoint);
+  marker.points.push_back(endPoint);
+
+  // Quaternion for orientation
+  tf2::Quaternion q;
+  q.setRPY(0, 0, 0);
+  marker.pose.orientation.x = q.x();
+  marker.pose.orientation.y = q.y();
+  marker.pose.orientation.z = q.z();
+  marker.pose.orientation.w = q.w();
+}
+
+void dlio::OdomNode::createAngularVelocityMarker(const std::string& frame_id, const rclcpp::Time& stamp,
+                                                 const Eigen::Vector3f& w_b,
+                                                 visualization_msgs::msg::Marker& marker) {
+  // Cylinder to visualize angular velocity as a disc/ring oriented along rotation axis
+  marker.header.frame_id = frame_id;
+  marker.header.stamp    = stamp;
+  marker.ns   = "angular_velocity";
+  marker.id   = 1;
+  marker.type = visualization_msgs::msg::Marker::CYLINDER;
+  marker.action = visualization_msgs::msg::Marker::ADD;
+
+  // Angular velocity magnitude
+  const double angularMagnitude = static_cast<double>(w_b.norm());
+
+  if (angularMagnitude > 1e-6) {
+    // Scale based on angular velocity magnitude
+    const double baseRadius = std::min(std::max(angularMagnitude * 0.2, 0.1), 0.5);
+    marker.scale.x = baseRadius * 2.0;  // diameter in x
+    marker.scale.y = baseRadius * 2.0;  // diameter in y
+    marker.scale.z = 0.02;              // thin disc height
+
+    // Color: blue for angular velocity with alpha based on magnitude
+    marker.color.a = std::min(angularMagnitude * 0.5 + 0.3, 1.0);
+    marker.color.r = 0.0;
+    marker.color.g = 0.0;
+    marker.color.b = 1.0;
+  } else {
+    // No significant angular velocity - make marker invisible
+    marker.scale.x = 0.0;
+    marker.scale.y = 0.0;
+    marker.scale.z = 0.0;
+    marker.color.a = 0.0;
+  }
+
+  // Set lifetime
+  marker.lifetime = rclcpp::Duration::from_seconds(0.1);
+
+  // Position at current pose position
+  marker.pose.position.x = 0.0;
+  marker.pose.position.y = 0.0;
+  marker.pose.position.z = 0.0;
+
+  // Orient the disc perpendicular to the angular velocity vector (rotation axis)
+  if (angularMagnitude > 1e-6) {
+    Eigen::Vector3d rotationAxis = w_b.cast<double>().normalized();
+
+    // Create a rotation that aligns the cylinder's z-axis with the rotation axis
+    // Default cylinder orientation is along z-axis
+    Eigen::Vector3d zAxis(0.0, 0.0, 1.0);
+
+    // Calculate rotation to align z-axis with rotation axis
+    Eigen::Quaterniond orientation;
+    const double dot = rotationAxis.dot(zAxis);
+    if (dot > 0.9999) {
+      // Already aligned
+      orientation = Eigen::Quaterniond::Identity();
+    } else if (dot < -0.9999) {
+      // Opposite direction - rotate 180 degrees around x-axis
+      orientation = Eigen::Quaterniond(0.0, 1.0, 0.0, 0.0);
+    } else {
+      // General case - use cross product to find rotation axis
+      Eigen::Vector3d rotAxis = zAxis.cross(rotationAxis).normalized();
+      const double c = std::max(-1.0, std::min(1.0, zAxis.dot(rotationAxis)));
+      const double angle = std::acos(c);
+      orientation = Eigen::Quaterniond(Eigen::AngleAxisd(angle, rotAxis));
+    }
+
+    marker.pose.orientation.x = orientation.x();
+    marker.pose.orientation.y = orientation.y();
+    marker.pose.orientation.z = orientation.z();
+    marker.pose.orientation.w = orientation.w();
+  } else {
+    // Default orientation
+    marker.pose.orientation.x = 0.0;
+    marker.pose.orientation.y = 0.0;
+    marker.pose.orientation.z = 0.0;
+    marker.pose.orientation.w = 1.0;
+  }
 }
 
 
@@ -1565,15 +1719,15 @@ void dlio::OdomNode::propagateState() {
   const Eigen::Vector3f a_w = Rwb * f_b - g_w;
 
   // Integrate p, v (world frame)
-  this->state.p      += this->state.v.lin.w * dt + 0.5f * a_w * (float)(dt*dt);
-  this->state.v.lin.w += a_w * (float)dt;
+  this->state.p      += this->state.v.lin.w * dt + 0.5f * a_w * static_cast<float> (dt * dt);
+  this->state.v.lin.w += a_w * static_cast<float> (dt);
   this->state.v.lin.b  = Rwb.transpose() * this->state.v.lin.w;
 
   // Integrate attitude with measured (bias-corrected) omega (body frame)
   const Eigen::Vector3f omega_b = this->state.v.ang.b = this->imu_meas.ang_vel;
   const Eigen::Quaternionf omega_q(0.f, omega_b.x(), omega_b.y(), omega_b.z());
   Eigen::Quaternionf qdot = (this->state.q * omega_q);
-  this->state.q.coeffs() += 0.5f * (float)dt * qdot.coeffs();
+  this->state.q.coeffs() += 0.5f * static_cast<float> (dt) * qdot.coeffs();
   this->state.q.normalize();
 
   // Update angular velocity in world for later use
@@ -1581,87 +1735,64 @@ void dlio::OdomNode::propagateState() {
 }
 
 void dlio::OdomNode::updateState() {
-  std::lock_guard<std::mutex> lock(this->geo.mtx);
 
-  const double dt = std::max(1e-6, this->scan_stamp - this->prev_scan_stamp);
+  // Lock thread to prevent state from being accessed by PropagateState
+  std::lock_guard<std::mutex> lock( this->geo.mtx );
 
-  // Inputs from upstream (pose at scan time)
-  const Eigen::Vector3f p_meas = this->lidarPose.p;
-  const Eigen::Quaternionf q_meas = this->lidarPose.q;
+  Eigen::Vector3f pin = this->lidarPose.p;
+  Eigen::Quaternionf qin = this->lidarPose.q;
+  double dt = this->scan_stamp - this->prev_scan_stamp;
 
-  // Current estimates
-  Eigen::Quaternionf& qhat = this->state.q;
-  Eigen::Matrix3f Rwb = qhat.toRotationMatrix();
+  Eigen::Quaternionf qe, qhat, qcorr;
+  qhat = this->state.q;
 
-  // --- Orientation observer (Eq. 3) ---
-  // Error quaternion: qe = qhat* ⊗ q
-  Eigen::Quaternionf qe = qhat.conjugate() * q_meas;
-  if (qe.w() < 0.f) { qe.w() = -qe.w(); qe.x() = -qe.x(); qe.y() = -qe.y(); qe.z() = -qe.z(); } // optional normalization of sign for continuity
+  // Constuct error quaternion
+  qe = qhat.conjugate()*qin;
 
-  const float s = (qe.w() >= 0.f) ? 1.f : -1.f;
-  const Eigen::Quaternionf corr_term( 1.f - std::abs(qe.w()),
-                                      s*qe.x(), s*qe.y(), s*qe.z() );
+  double sgn = 1.;
+  if (qe.w() < 0) {
+    sgn = -1;
+  }
 
-  // Discrete correction: qhat += dt * this->geo_Kq_*[...]
-  qhat.coeffs() += (this->geo_Kq_ * (float)dt) * corr_term.coeffs();
-  qhat.normalize();
+  // Construct quaternion correction
+  qcorr.w() = 1 - abs(qe.w());
+  qcorr.vec() = sgn*qe.vec();
+  qcorr = qhat * qcorr;
 
-  // Gyro bias update: g_b_hat += -dt * c2 * (qe^0 * qe_vec)
-  const float c2 = (float)this->geo_Kgb_;
-  Eigen::Vector3f d_gb = - c2 * (float)dt * (qe.w() * Eigen::Vector3f(qe.x(), qe.y(), qe.z()));
-  this->state.b.gyro += d_gb;
+  Eigen::Vector3f err = pin - this->state.p;
+  Eigen::Vector3f err_body;
 
-  // --- Translation observer (Eq. 15) ---
-  // Position error (world)
-  const Eigen::Vector3f p_e = p_meas - this->state.p;
+  err_body = qhat.conjugate()._transformVector(err);
 
-  // Gains: map your params -> K1,K2,K3 (diagonal, positive)
-  const float K1 = (float)this->geo_Kab_;
-  const float K2 = (float)this->geo_Kv_;
-  const float K3 = (float)this->geo_Kp_;
+  double abias_max = this->geo_abias_max_;
+  double gbias_max = this->geo_gbias_max_;
 
-  // Useful angular rates
-  const Eigen::Vector3f omega_b = this->state.v.ang.b;     // body
-  const Eigen::Vector3f omega_w = this->state.v.ang.w;     // world
+  // Update accel bias
+  this->state.b.accel -= dt * this->geo_Kab_ * err_body;
+  this->state.b.accel = this->state.b.accel.array().min(abias_max).max(-abias_max);
 
-  // Ω and \dot{Ω} in body frame
-  static Eigen::Vector3f omega_b_prev = omega_b;
-  const Eigen::Vector3f domega_b = (omega_b - omega_b_prev) / (float)dt;
-  omega_b_prev = omega_b;
+  // Update gyro bias
+  this->state.b.gyro[0] -= dt * this->geo_Kgb_ * qe.w() * qe.x();
+  this->state.b.gyro[1] -= dt * this->geo_Kgb_ * qe.w() * qe.y();
+  this->state.b.gyro[2] -= dt * this->geo_Kgb_ * qe.w() * qe.z();
+  this->state.b.gyro = this->state.b.gyro.array().min(gbias_max).max(-gbias_max);
 
-  auto skew = [](const Eigen::Vector3f& w) {
-    Eigen::Matrix3f W; W <<    0, -w.z(),  w.y(),
-                              w.z(),    0, -w.x(),
-                             -w.y(), w.x(),   0;
-    return W;
-  };
-  const Eigen::Matrix3f Om   = skew(omega_b);
-  const Eigen::Matrix3f Om2  = Om * Om;
-  const Eigen::Matrix3f OmDot= skew(domega_b);
+  // Update state
+  this->state.p += dt * this->geo_Kp_ * err;
+  this->state.v.lin.w += dt * this->geo_Kv_ * err;
 
-  // p_hat dot, v_hat dot corrections (discrete)
-  this->state.p       += (K3 * (float)dt) * p_e;
+  this->state.q.w() += dt * this->geo_Kq_ * qcorr.w();
+  this->state.q.x() += dt * this->geo_Kq_ * qcorr.x();
+  this->state.q.y() += dt * this->geo_Kq_ * qcorr.y();
+  this->state.q.z() += dt * this->geo_Kq_ * qcorr.z();
+  this->state.q.normalize();
 
-  // Use identity: R Ω R^T p_e = (R ω) × p_e = omega_w × p_e
-  const Eigen::Vector3f cross_term = omega_w.cross(p_e);
-  this->state.v.lin.w += (K2 * (float)dt) * p_e
-                       + (K3 * (float)dt) * cross_term;
+  // store previous pose, orientation, and velocity
+  this->geo.prev_p = this->state.p;
+  this->geo.prev_q = this->state.q;
+  this->geo.prev_vel = this->state.v.lin.w;
 
-  // a_b_hat dot
-  const Eigen::Vector3f p_e_b = Rwb.transpose() * p_e;
-  const Eigen::Vector3f a_b_dot =
-      - ( K1 * p_e_b
-        + K2 * (Om * p_e_b)
-        + K3 * ((Om2 - OmDot) * p_e_b) );
-  this->state.b.accel += a_b_dot * (float)dt;
-
-        
-  const float ab_max = (float)this->geo_abias_max_;
-  const float gb_max = (float)this->geo_gbias_max_;
-  this->state.b.accel = this->state.b.accel.array().min(ab_max).max(-ab_max);
-  this->state.b.gyro  = this->state.b.gyro .array().min(gb_max).max(-gb_max);
 }
-
 
 sensor_msgs::msg::Imu::SharedPtr dlio::OdomNode::transformImu(const sensor_msgs::msg::Imu::SharedPtr& imu_raw) {
 
@@ -1944,90 +2075,6 @@ void dlio::OdomNode::onKeyframesTrim(std::size_t removed) {
   shift_down(this->keyframe_concave);
 }
 
-
-// void dlio::OdomNode::updateKeyframes() {
-
-//   // calculate difference in pose and rotation to all poses in trajectory
-//   float closest_d = std::numeric_limits<float>::infinity();
-//   int closest_idx = 0;
-//   int keyframes_idx = 0;
-
-//   int num_nearby = 0;
-
-//   for (const auto& k : this->keyframes) {
-
-//     // calculate distance between current pose and pose in keyframes
-//     float delta_d = sqrt( pow(this->state.p[0] - k.first.first[0], 2) +
-//                           pow(this->state.p[1] - k.first.first[1], 2) +
-//                           pow(this->state.p[2] - k.first.first[2], 2) );
-
-//     // count the number nearby current pose
-//     if (delta_d <= this->keyframe_thresh_dist_ * 1.5){
-//       ++num_nearby;
-//     }
-
-//     // store into variable
-//     if (delta_d < closest_d) {
-//       closest_d = delta_d;
-//       closest_idx = keyframes_idx;
-//     }
-
-//     keyframes_idx++;
-
-//   }
-
-//   // get closest pose and corresponding rotation
-//   Eigen::Vector3f closest_pose = this->keyframes[closest_idx].first.first;
-//   Eigen::Quaternionf closest_pose_r = this->keyframes[closest_idx].first.second;
-
-//   // calculate distance between current pose and closest pose from above
-//   float dd = sqrt( pow(this->state.p[0] - closest_pose[0], 2) +
-//                    pow(this->state.p[1] - closest_pose[1], 2) +
-//                    pow(this->state.p[2] - closest_pose[2], 2) );
-
-//   // calculate difference in orientation using SLERP
-//   Eigen::Quaternionf dq;
-
-//   if (this->state.q.dot(closest_pose_r) < 0.) {
-//     Eigen::Quaternionf lq = closest_pose_r;
-//     lq.w() *= -1.; lq.x() *= -1.; lq.y() *= -1.; lq.z() *= -1.;
-//     dq = this->state.q * lq.inverse();
-//   } else {
-//     dq = this->state.q * closest_pose_r.inverse();
-//   }
-
-//   double theta_rad = 2. * atan2(sqrt( pow(dq.x(), 2) + pow(dq.y(), 2) + pow(dq.z(), 2) ), dq.w());
-//   double theta_deg = theta_rad * (180.0/M_PI);
-
-//   // update keyframes
-//   bool newKeyframe = false;
-
-//   if (abs(dd) > this->keyframe_thresh_dist_ || abs(theta_deg) > this->keyframe_thresh_rot_) {
-//     newKeyframe = true;
-//   }
-
-//   if (abs(dd) <= this->keyframe_thresh_dist_) {
-//     newKeyframe = false;
-//   }
-
-//   if (abs(dd) <= this->keyframe_thresh_dist_ && abs(theta_deg) > this->keyframe_thresh_rot_ && num_nearby <= 1) {
-//     newKeyframe = true;
-//   }
-
-//   if (newKeyframe) {
-
-//     // update keyframe vector
-//     std::unique_lock<decltype(this->keyframes_mutex)> lock(this->keyframes_mutex);
-//     this->keyframes.push_back(std::make_pair(std::make_pair(this->lidarPose.p, this->lidarPose.q), this->current_scan));
-//     this->keyframe_timestamps.push_back(this->scan_header_stamp);
-//     this->keyframe_normals.push_back(this->gicp.getSourceCovariances());
-//     this->keyframe_transformations.push_back(this->T_corr);
-//     lock.unlock();
-
-//   }
-
-// }
-
 void dlio::OdomNode::setAdaptiveParams() {
 
   // Spaciousness
@@ -2242,22 +2289,6 @@ void dlio::OdomNode::debug() {
 
   // Average sensor rates
   int win_size = 100;
-  // double avg_imu_rate;
-  // double avg_lidar_rate;
-  // if (this->imu_rates.size() < win_size) {
-  //   avg_imu_rate =
-  //     std::accumulate(this->imu_rates.begin(), this->imu_rates.end(), 0.0) / this->imu_rates.size();
-  // } else {
-  //   avg_imu_rate =
-  //     std::accumulate(this->imu_rates.end()-win_size, this->imu_rates.end(), 0.0) / win_size;
-  // }
-  // if (this->lidar_rates.size() < win_size) {
-  //   avg_lidar_rate =
-  //     std::accumulate(this->lidar_rates.begin(), this->lidar_rates.end(), 0.0) / this->lidar_rates.size();
-  // } else {
-  //   avg_lidar_rate =
-  //     std::accumulate(this->lidar_rates.end()-win_size, this->lidar_rates.end(), 0.0) / win_size;
-  // }
 
   // RAM Usage
   double vm_usage = 0.0;
@@ -2326,33 +2357,6 @@ void dlio::OdomNode::debug() {
       << this->cpu_type + " x " + std::to_string(this->numProcessors)
       << "|" << std::endl;
   }
-
-  // if (this->sensor == dlio::SensorType::OUSTER) {
-  //   std::cout << "| " << std::left << std::setfill(' ') << std::setw(66)
-  //     << "Sensor Rates: Ouster @ " + to_string_with_precision(avg_lidar_rate, 2)
-  //                                  + " Hz, IMU @ " + to_string_with_precision(avg_imu_rate, 2) + " Hz"
-  //     << "|" << std::endl;
-  // } else if (this->sensor == dlio::SensorType::VELODYNE) {
-  //   std::cout << "| " << std::left << std::setfill(' ') << std::setw(66)
-  //     << "Sensor Rates: Velodyne @ " + to_string_with_precision(avg_lidar_rate, 2)
-  //                                    + " Hz, IMU @ " + to_string_with_precision(avg_imu_rate, 2) + " Hz"
-  //     << "|" << std::endl;
-  // } else if (this->sensor == dlio::SensorType::HESAI) {
-  //   std::cout << "| " << std::left << std::setfill(' ') << std::setw(66)
-  //     << "Sensor Rates: Hesai @ " + to_string_with_precision(avg_lidar_rate, 2)
-  //                                 + " Hz, IMU @ " + to_string_with_precision(avg_imu_rate, 2) + " Hz"
-  //     << "|" << std::endl;
-  // } else if (this->sensor == dlio::SensorType::LIVOX) {
-  //   std::cout << "| " << std::left << std::setfill(' ') << std::setw(66)
-  //     << "Sensor Rates: Livox @ " + to_string_with_precision(avg_lidar_rate, 2)
-  //                                 + " Hz, IMU @ " + to_string_with_precision(avg_imu_rate, 2) + " Hz"
-  //     << "|" << std::endl;
-  // } else {
-  //   std::cout << "| " << std::left << std::setfill(' ') << std::setw(66)
-  //     << "Sensor Rates: Unknown LiDAR @ " + to_string_with_precision(avg_lidar_rate, 2)
-  //                                         + " Hz, IMU @ " + to_string_with_precision(avg_imu_rate, 2) + " Hz"
-  //     << "|" << std::endl;
-  // }
 
   std::cout << "|===================================================================|" << std::endl;
 

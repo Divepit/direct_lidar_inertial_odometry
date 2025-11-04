@@ -174,7 +174,7 @@ void dlio::MapNode::callbackKeyframe(const sensor_msgs::msg::PointCloud2::ConstS
       sensor_msgs::msg::PointCloud2 map_ros;
       pcl::toROSMsg(*out_cloud, map_ros);
       map_ros.header.stamp = this->now();
-      map_ros.header.frame_id = "dlio_map";  // or this->odom_frame if desired
+      map_ros.header.frame_id = this->odom_frame;
       this->map_pub->publish(map_ros);
     }
   }

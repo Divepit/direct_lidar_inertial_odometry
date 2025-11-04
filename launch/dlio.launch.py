@@ -40,6 +40,8 @@ def generate_launch_description():
             ('kf_cloud', 'dlio/odom_node/pointcloud/keyframe'),
             ('deskewed', 'dlio/odom_node/pointcloud/deskewed'),
             ('deskewed_not_transformed', 'dlio/odom_node/pointcloud/deskewed_not_transformed'),
+            ('markers/velocity_linear', 'dlio/odom_node/markers/velocity_linear'),
+            ('markers/velocity_angular', 'dlio/odom_node/markers/velocity_angular'),
         ],
     )
 
