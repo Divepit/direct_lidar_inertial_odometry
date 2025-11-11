@@ -14,8 +14,8 @@ project(direct_lidar_inertial_odometry)
 # --- Build system / ROSIDL (C++-only) ---
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_cmake REQUIRED)
-find_package(rosidl_generator_cpp REQUIRED)
 find_package(rosidl_typesupport_cpp REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 
 # --- ROS deps ---
 find_package(rclcpp REQUIRED)
@@ -40,11 +40,9 @@ set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 # Not all machines have <cpuid.h> available
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
-# --- Generate C++ interfaces only (no python) ---
-rosidl_generate_interfaces(
-  ${PROJECT_NAME}
+# --- Generate interfaces (C++ + Python) ---
+rosidl_generate_interfaces(${PROJECT_NAME}
   srv/SavePCD.srv
-  DEPENDENCIES
 )
 rosidl_get_typesupport_target(
   cpp_typesupport_target
@@ -119,7 +117,7 @@ ament_export_libraries(nano_gicp nanoflann)
 ament_export_dependencies(
   rclcpp std_msgs sensor_msgs geometry_msgs nav_msgs
   pcl_ros pcl_conversions
-  rosidl_runtime_cpp rosidl_typesupport_cpp
+  rosidl_runtime_cpp rosidl_typesupport_cpp rosidl_default_runtime
 )
 
 # --- Install binaries ---
