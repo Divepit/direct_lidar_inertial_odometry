@@ -646,22 +646,27 @@ if (this->kf_pose_ros.poses.size() >= 30) {
   this->kf_pose_ros.header.frame_id = this->odom_frame;
   this->kf_pose_pub->publish(this->kf_pose_ros);
 
-  // publish keyframe scan for map
-  if (this->vf_use_) {
-    if (kf.second->points.size() == kf.second->width * kf.second->height) {
-      sensor_msgs::msg::PointCloud2 keyframe_cloud_ros;
-      pcl::toROSMsg(*kf.second, keyframe_cloud_ros);
-      keyframe_cloud_ros.header.stamp = timestamp;
-      keyframe_cloud_ros.header.frame_id = this->odom_frame;
-      this->kf_cloud_pub->publish(keyframe_cloud_ros);
+  auto publish_kf_cloud = [&](pcl::PointCloud<PointType>::ConstPtr cloud) {
+    if (!cloud || cloud->empty()) return;
+
+    // Older code required organized clouds; enforce dimensions here to keep map
+    // building unblocked even after voxel filtering.
+    pcl::PointCloud<PointType>::ConstPtr msg_cloud = cloud;
+    if (msg_cloud->points.size() != msg_cloud->width * msg_cloud->height) {
+      auto fixed = std::make_shared<pcl::PointCloud<PointType>>(*msg_cloud);
+      fixed->width  = static_cast<uint32_t>(fixed->points.size());
+      fixed->height = 1;
+      msg_cloud = fixed;
     }
-  } else {
+
     sensor_msgs::msg::PointCloud2 keyframe_cloud_ros;
-    pcl::toROSMsg(*kf.second, keyframe_cloud_ros);
+    pcl::toROSMsg(*msg_cloud, keyframe_cloud_ros);
     keyframe_cloud_ros.header.stamp = timestamp;
     keyframe_cloud_ros.header.frame_id = this->odom_frame;
     this->kf_cloud_pub->publish(keyframe_cloud_ros);
-  }
+  };
+
+  publish_kf_cloud(kf.second);
 
 }
 
