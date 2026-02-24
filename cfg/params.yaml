@@ -19,7 +19,7 @@ dlio:
     imu: imu
 
   map:
-    waitUntilMove: true
+    waitUntilMove: false
     dense:
       filtered: false
     sparse:
@@ -35,7 +35,7 @@ dlio:
       calibration:
         gyro: true
         accel: true
-        time: 3
+        time: 5
       bufferSize: 5000
 
     preprocessing:
