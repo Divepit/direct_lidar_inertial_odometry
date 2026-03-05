@@ -49,6 +49,13 @@ template class nano_gicp::LsqRegistration<PointType, PointType>;
 
 namespace nano_gicp {
 
+namespace {
+// LM linear-system backend toggle (file-local):
+//   false -> LDLT only (faster, less robust on ill-conditioned systems)
+//   true  -> SVD only  (more robust, higher compute cost)
+constexpr bool kLmUseSvdOnly = true;
+}
+
 template <typename PointTarget, typename PointSource>
 LsqRegistration<PointTarget, PointSource>::LsqRegistration() {
   this->reg_name_ = "LsqRegistration";
@@ -56,6 +63,8 @@ LsqRegistration<PointTarget, PointSource>::LsqRegistration() {
   rotation_epsilon_ = 2e-3;
   transformation_epsilon_ = 5e-4;
 
+  // Default backend for registration updates.
+  // step_optimize() can dispatch to GN, but LM is the default and most robust path.
   lsq_optimizer_type_ = LSQ_OPTIMIZER_TYPE::LevenbergMarquardt;
   lm_debug_print_ = false;
   lm_max_iterations_ = 10;
@@ -106,6 +115,8 @@ double LsqRegistration<PointTarget, PointSource>::getFinalError() const {
 
 template <typename PointTarget, typename PointSource>
 void LsqRegistration<PointTarget, PointSource>::computeTransformation(PointCloudSource& output, const Matrix4& guess) {
+  // `align()` from PCL enters here (through the derived NanoGICP override).
+  // x0 is the current SE(3) estimate initialized from the user-provided guess.
   Eigen::Isometry3d x0 = Eigen::Isometry3d(guess.template cast<double>());
 
   lm_lambda_ = -1.0;
@@ -120,6 +131,7 @@ void LsqRegistration<PointTarget, PointSource>::computeTransformation(PointCloud
   for (int i = 0; i < max_iterations_ && !converged_; i++) {
     nr_iterations_ = i;
 
+    // One nonlinear least-squares step (LM or GN depending on configuration).
     Eigen::Isometry3d delta;
     if (!step_optimize(x0, delta)) {
       std::cerr << "lm not converged!!" << std::endl;
@@ -147,6 +159,7 @@ bool LsqRegistration<PointTarget, PointSource>::is_converged(const Eigen::Isomet
 
 template <typename PointTarget, typename PointSource>
 bool LsqRegistration<PointTarget, PointSource>::step_optimize(Eigen::Isometry3d& x0, Eigen::Isometry3d& delta) {
+  // Central dispatch point for the nonlinear update method.
   switch (lsq_optimizer_type_) {
     case LSQ_OPTIMIZER_TYPE::LevenbergMarquardt:
       return step_lm(x0, delta);
@@ -193,7 +206,7 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0,
   Eigen::Matrix<double, 6, 1> s = H.diagonal().cwiseAbs().cwiseMax(kEps).cwiseSqrt();
   Eigen::Matrix<double, 6, 6> S = s.cwiseInverse().asDiagonal();
 
-  // Scaled system
+  // Solve in scaled coordinates for better conditioning.
   Eigen::Matrix<double, 6, 6> Hs = S * H * S;
   Eigen::Matrix<double, 6, 1> bs = S * b;
 
@@ -220,25 +233,26 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0,
     Eigen::Matrix<double, 6, 1> ds;
     bool solved = false;
 
-    // Try LDLT first
-    {
+    if constexpr (kLmUseSvdOnly) {
+      // Robust dense solve (Eigen JacobiSVD is appropriate for small 6x6 systems).
+      Eigen::JacobiSVD<Eigen::Matrix<double, 6, 6>> svd(A, Eigen::ComputeFullU | Eigen::ComputeFullV);
+      const auto& sing = svd.singularValues();
+      Eigen::Matrix<double, 6, 6> S_inv = Eigen::Matrix<double, 6, 6>::Zero();
+      const double rel = 1e-12 * std::max(1.0, sing(0));
+      for (int k = 0; k < 6; ++k) {
+        if (sing(k) > rel) {
+          S_inv(k, k) = 1.0 / sing(k);
+        }
+      }
+      ds = svd.matrixV() * S_inv * svd.matrixU().transpose() * (-bs);
+      solved = ds.allFinite();
+    } else {
+      // Fast path solve.
       Eigen::LDLT<Eigen::Matrix<double, 6, 6>> ldlt(A);
       if (ldlt.info() == Eigen::Success) {
         ds = ldlt.solve(-bs);
         solved = (ldlt.info() == Eigen::Success) && ds.allFinite();
       }
-    }
-
-    // Fallback: SVD (robust for near-singular A)
-    if (!solved) {
-      Eigen::JacobiSVD<Eigen::Matrix<double, 6, 6>> svd(A, Eigen::ComputeFullU | Eigen::ComputeFullV);
-      const auto& sing = svd.singularValues();
-      Eigen::Matrix<double, 6, 6> S_inv = Eigen::Matrix<double, 6, 6>::Zero();
-      // Threshold relative to max singular value
-      const double rel = 1e-12 * std::max(1.0, sing(0));
-      for (int k = 0; k < 6; ++k) if (sing(k) > rel) S_inv(k, k) = 1.0 / sing(k);
-      ds = svd.matrixV() * S_inv * svd.matrixU().transpose() * (-bs);
-      solved = ds.allFinite();
     }
 
     if (!solved) {
@@ -259,7 +273,7 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0,
     if (tn > kMaxTransStep) fac = std::min(fac, kMaxTransStep / tn);
     if (fac < 1.0) d *= fac;
 
-    // Build δ ∈ SE(3) and evaluate trial
+    // Build delta in SE(3) and evaluate trial objective.
     delta.setIdentity();
     delta.linear()      = so3_exp(d.head<3>()).toRotationMatrix();
     delta.translation() = d.tail<3>();
@@ -272,7 +286,7 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0,
       continue;
     }
 
-    // Predicted reduction (standard LM): pred = -dᵀ b - 0.5 dᵀ H d
+    // Predicted reduction (standard LM): pred = -d^T b - 0.5 d^T H d
     const double Hd = (H * d).dot(d);
     const double pred = -d.dot(b) - 0.5 * Hd;
 

@@ -59,6 +59,7 @@ private:
   void getParams();
 
   void callbackPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr pc);
+  void processPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& pc);
   void callbackImu(const sensor_msgs::msg::Imu::SharedPtr imu);
 
   void publishPose();
@@ -104,6 +105,7 @@ private:
   void computeMetrics();
   void computeSpaciousness();
   void computeDensity();
+  void computeMotionDeviation();
 
   sensor_msgs::msg::Imu::SharedPtr transformImu(const sensor_msgs::msg::Imu::SharedPtr& imu);
 
@@ -329,6 +331,7 @@ private:
   struct Metrics {
     std::vector<float> spaciousness;
     std::vector<float> density;
+    std::vector<float> motion_deviation;
   }; Metrics metrics;
 
   std::string cpu_type;
@@ -367,6 +370,7 @@ private:
 
   bool vf_use_;
   double vf_res_;
+  int pointcloud_queue_size_;
 
   bool imu_calibrate_;
   bool calibrate_gyro_;
@@ -409,11 +413,25 @@ private:
     double scanStamp;
   };
 
+  struct PointCloudJob {
+    sensor_msgs::msg::PointCloud2::SharedPtr cloud_msg;
+  };
+
+  std::thread pointcloud_worker_;
+  std::mutex pc_q_mtx_;
+  std::condition_variable pc_q_cv_;
+  std::deque<PointCloudJob> pc_q_;
+  // Metrics are used independently of the timing feature flag.
+  std::mutex g_metrics_mutex;
+
   std::thread pub_worker_;
   std::mutex q_mtx_;
   std::condition_variable q_cv_;
   std::deque<PubJob> q_;
   std::atomic_bool stop_{false};
+
+  void pointCloudWorkerLoop();
+  void enqueuePointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& pc);
 
   void workerLoop();
   void enqueuePublish(pcl::PointCloud<PointType>::ConstPtr cloud,

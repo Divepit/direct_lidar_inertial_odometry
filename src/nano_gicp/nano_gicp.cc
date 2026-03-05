@@ -192,6 +192,8 @@ bool NanoGICP<PointSource, PointTarget>::calculateTargetCovariances() {
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::computeTransformation(PointCloudSource& output, const Matrix4& guess) {
+  // Registration requires per-point local covariance estimates for both clouds.
+  // Rebuild lazily when input/target changed or cache is invalid.
   if (source_covs_ == nullptr || source_covs_->size() != input_->size()) {
     calculateSourceCovariances();
   }
@@ -199,6 +201,7 @@ void NanoGICP<PointSource, PointTarget>::computeTransformation(PointCloudSource&
     calculateTargetCovariances();
   }
 
+  // Delegate optimization to the common least-squares backend (LM/GN dispatch).
   LsqRegistration<PointSource, PointTarget>::computeTransformation(output, guess);
 }
 
@@ -221,6 +224,7 @@ void NanoGICP<PointSource, PointTarget>::update_correspondences(const Eigen::Iso
     PointTarget pt;
     pt.getVector4fMap() = trans_f * input_->at(i).getVector4fMap();
 
+    // 1-NN correspondence in the target map.
     target_kdtree_->nearestKSearch(pt, 1, k_indices, k_sq_dists);
 
     sq_distances_[i] = k_sq_dists[0];
@@ -234,6 +238,9 @@ void NanoGICP<PointSource, PointTarget>::update_correspondences(const Eigen::Iso
     const auto& cov_A = (*source_covs_)[i];
     const auto& cov_B = (*target_covs_)[target_index];
 
+    // GICP covariance model:
+    //   C = C_B + R * C_A * R^T
+    // and Mahalanobis weight M = C^{-1}.
     Eigen::Matrix4d RCR = cov_B + trans.matrix() * cov_A * trans.matrix().transpose();
     RCR(3, 3) = 1.0;
 
@@ -248,6 +255,9 @@ template <typename PointSource, typename PointTarget>
 double NanoGICP<PointSource, PointTarget>::linearize(const Eigen::Isometry3d& trans, Eigen::Matrix<double, 6, 6>* H, Eigen::Matrix<double, 6, 1>* b) {
   update_correspondences(trans);
 
+  // Objective:
+  //   sum_i e_i^T M_i e_i
+  // where e_i = p_i^target - T * p_i^source and M_i is the GICP Mahalanobis weight.
   double sum_errors = 0.0;
   std::vector<Eigen::Matrix<double, 6, 6>, Eigen::aligned_allocator<Eigen::Matrix<double, 6, 6>>> Hs(num_threads_);
   std::vector<Eigen::Matrix<double, 6, 1>, Eigen::aligned_allocator<Eigen::Matrix<double, 6, 1>>> bs(num_threads_);
@@ -280,6 +290,7 @@ double NanoGICP<PointSource, PointTarget>::linearize(const Eigen::Isometry3d& tr
     dtdx0.block<3, 3>(0, 0) = skewd(transed_mean_A.head<3>());
     dtdx0.block<3, 3>(0, 3) = -Eigen::Matrix3d::Identity();
 
+    // First-order Jacobian wrt se(3) perturbation [w, t].
     Eigen::Matrix<double, 4, 6> jlossexp = dtdx0;
 
     Eigen::Matrix<double, 6, 6> Hi = jlossexp.transpose() * mahalanobis_[i] * jlossexp;
