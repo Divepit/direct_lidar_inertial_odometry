@@ -125,6 +125,11 @@ protected:
   bool calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud, const nanoflann::KdTreeFLANN<PointT>& kdtree, CovarianceList& covariances, float& density);
 
 public:
+  bool computeInitialHessianAtGuess(const Matrix4& guess,
+                                    Eigen::Matrix<double, 6, 6>& H,
+                                    Eigen::Matrix<double, 6, 1>& b,
+                                    double& error);
+
   std::shared_ptr<const nanoflann::KdTreeFLANN<PointSource>> source_kdtree_;
   std::shared_ptr<const nanoflann::KdTreeFLANN<PointTarget>> target_kdtree_;
 

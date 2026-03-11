@@ -150,6 +150,12 @@ protected:
   bool step_optimize(Eigen::Isometry3d& x0, Eigen::Isometry3d& delta);
   bool step_gn(Eigen::Isometry3d& x0, Eigen::Isometry3d& delta);
   bool step_lm(Eigen::Isometry3d& x0, Eigen::Isometry3d& delta);
+  bool step_lm_pcg(Eigen::Isometry3d& x0, Eigen::Isometry3d& delta);
+
+  bool computeLinearizationAtGuess(const Matrix4& guess,
+                                   Eigen::Matrix<double, 6, 6>& H,
+                                   Eigen::Matrix<double, 6, 1>& b,
+                                   double& error);
 
 protected:
   double rotation_epsilon_;

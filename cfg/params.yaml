@@ -52,6 +52,8 @@
     odom/gicp/transformationEpsilon: 0.005
     odom/gicp/rotationEpsilon: 0.001
     odom/gicp/initLambdaFactor: 1e-7
+    odom/gicp/degeneracy/hessian_in_base_frame: false
+    odom/gicp/degeneracy/trans_eig_abs_threshold: 5000.0
 
     odom/geo/Kp: 4.5
     odom/geo/Kv: 11.25
@@ -69,3 +71,8 @@
     viz/vel_marker/ang/r_max: 0.50
     viz/vel_marker/thickness: 0.03
     viz/vel_marker/lifetime: 0.10
+    viz/corr_marker/enabled: true
+    viz/corr_marker/scale: 1.0
+    viz/corr_marker/line_width: 0.03
+    viz/corr_marker/max_segments: 2000
+    viz/corr_marker/lifetime: 0.0

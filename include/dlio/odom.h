@@ -23,6 +23,7 @@
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 #include <builtin_interfaces/msg/time.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 
@@ -41,6 +42,8 @@
 #include <pcl/surface/concave_hull.h>
 #include <pcl/surface/convex_hull.h>
 #include <pcl_conversions/pcl_conversions.h>
+
+#include <array>
 
 class dlio::OdomNode: public rclcpp::Node {
 
@@ -64,13 +67,21 @@ private:
 
   void publishPose();
 
-  void publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud,
-                    const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
-                    const Eigen::Ref<const Eigen::Matrix4f>& T_all,
-                    double scanStamp);
-  void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
-                                    const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
-                                    const Eigen::Ref<const Eigen::Matrix4f>& T_all);
+void publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud,
+                  const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
+                  const Eigen::Ref<const Eigen::Matrix4f>& T_all,
+                  double scanStamp,
+                  const Eigen::Vector3f& state_p_scan,
+                  const Eigen::Quaternionf& state_q_scan,
+                  const Eigen::Vector3f& state_vlin_b_scan,
+                  const Eigen::Vector3f& state_vang_b_scan);
+
+void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
+                  const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
+                  const Eigen::Ref<const Eigen::Matrix4f>& T_all,
+                  const Eigen::Ref<const Eigen::Matrix4f>& T_map_odom,
+                  const rclcpp::Time& cloud_stamp);
+                  
   void publishKeyframe(std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
                        pcl::PointCloud<PointType>::ConstPtr> kf, rclcpp::Time timestamp);
 
@@ -123,12 +134,26 @@ private:
   void publishVelocityMarkers(const rclcpp::Time& stamp,
                               const Eigen::Vector3f& vlin_b,
                               const Eigen::Vector3f& vang_b);
+  void publishCorrectionMarker(const rclcpp::Time& stamp,
+                               const Eigen::Ref<const Eigen::Matrix4f>& T_corr,
+                               const Eigen::Ref<const Eigen::Matrix4f>& T_all);
+  void analyzeDegeneracyFromHessian(const Eigen::Ref<const Eigen::Matrix4f>& T_map_base);
+
+  void analyzeDegeneracyFromMatrix(
+    const Eigen::Ref<const Eigen::Matrix<double, 6, 6>>& H_in,
+    const Eigen::Ref<const Eigen::Matrix4f>& T_map_base);
+
+  void publishDegeneracyMarkers(const rclcpp::Time& stamp);
   void createLinVelocityMarker(const std::string& frame_id, const rclcpp::Time& stamp,
                                const Eigen::Vector3f& v_b,
                                visualization_msgs::msg::Marker& out);
   void createAngularVelocityMarker(const std::string& frame_id, const rclcpp::Time& stamp,
                                    const Eigen::Vector3f& w_b,
                                    visualization_msgs::msg::Marker& out);
+  void createCorrectionMarker(const std::string& frame_id, const rclcpp::Time& stamp,
+                              const Eigen::Vector3f& start_m,
+                              const Eigen::Vector3f& corr_vec_m,
+                              visualization_msgs::msg::Marker& out);
 
   void debug();
 
@@ -143,14 +168,19 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_odom_pub;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_map_prop_pub;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr kf_pose_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr kf_cloud_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_not_transformed_pub;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_map_pub;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_map_pub;
 
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr pub_lin_vel_marker_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr pub_ang_vel_marker_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr pub_corr_marker_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_degen_marker_;
 
   // TF
   std::shared_ptr<tf2_ros::TransformBroadcaster> br;
@@ -159,6 +189,8 @@ private:
   nav_msgs::msg::Odometry odom_ros;
   geometry_msgs::msg::PoseStamped pose_ros;
   nav_msgs::msg::Path path_ros;
+  nav_msgs::msg::Path path_odom_ros;
+  nav_msgs::msg::Path path_map_prop_ros;
   geometry_msgs::msg::PoseArray kf_pose_ros;
 
   // Flags
@@ -251,6 +283,10 @@ private:
   // Transformations
   Eigen::Matrix4f T, T_prior, T_corr;
   Eigen::Quaternionf q_final;
+  // Latest scan-time map->odom used to map IMU-propagated lidar poses into dlio_map.
+  Eigen::Matrix4f T_map_odom_latest = Eigen::Matrix4f::Identity();
+  bool has_T_map_odom_latest = false;
+  std::mutex mtx_T_map_odom_latest;
 
   Eigen::Vector3f origin;
 
@@ -334,6 +370,16 @@ private:
     std::vector<float> motion_deviation;
   }; Metrics metrics;
 
+  struct DegeneracyInfo {
+    bool valid = false;
+    Eigen::Vector3d eigvals_trans_dec = Eigen::Vector3d::Zero();
+    // Columns are translation-block eigenvectors in dlio_map.
+    Eigen::Matrix3d eigvecs_trans_map = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d p_map_base = Eigen::Vector3d::Zero();
+    std::array<bool, 3> weak_trans{{false, false, false}};
+    double trans_condition = 0.0;
+  }; DegeneracyInfo degen_info_;
+
   std::string cpu_type;
   std::vector<double> cpu_percents;
   clock_t lastCPU, lastSysCPU, lastUserCPU;
@@ -403,15 +449,42 @@ private:
   double viz_ang_radius_max_ = 1.0;
   double viz_disc_thickness_ = 0.01;        // [m]
   double viz_marker_lifetime_ = 1.0;       // [s]
+  bool   viz_corr_marker_ = true;
+  double viz_corr_gain_ = 1.0;             // [m per m] correction line gain
+  double viz_corr_line_width_ = 0.03;      // [m]
+  int    viz_corr_max_segments_ = 2000;    // number of stored correction segments
+  double viz_corr_lifetime_ = 0.0;         // [s], 0 keeps full correction history visible
+  std::vector<geometry_msgs::msg::Point> corr_marker_points_;
+
+  // Translation-only degeneracy analysis and visualization.
+  // Kept for parameter compatibility; currently ignored in analysis.
+  bool   degen_hessian_in_base_frame_ = true;
+  double degen_trans_eig_abs_thresh_ = 1e-4;
+
+  bool   viz_degen_marker_ = true;
+  double viz_degen_trans_scale_ = 0.75;
+  double viz_degen_shaft_diam_ = 0.03;
+  double viz_degen_head_diam_ = 0.06;
+  double viz_degen_head_len_ = 0.10;
+  double viz_degen_lifetime_ = 0.0;
+
+  bool degen_prev_dirs_initialized_ = false;
+  std::array<Eigen::Vector3d, 3> degen_prev_trans_dirs_map_;
 
 
-  struct PubJob {
-    pcl::PointCloud<PointType>::ConstPtr cloud;
-    Eigen::Matrix4f T_cloud;
-    Eigen::Matrix4f T_all;
-    rclcpp::Time scan_header_stamp;
-    double scanStamp;
-  };
+struct PubJob {
+  pcl::PointCloud<PointType>::ConstPtr cloud;
+  Eigen::Matrix4f T_cloud;
+  Eigen::Matrix4f T_all;
+  builtin_interfaces::msg::Time scan_header_stamp;
+  double scanStamp;
+
+  // Odom-state snapshot at the same scan reference time as T_all/T_cloud
+  Eigen::Vector3f state_p_scan;
+  Eigen::Quaternionf state_q_scan;
+  Eigen::Vector3f state_vlin_b_scan;
+  Eigen::Vector3f state_vang_b_scan;
+};
 
   struct PointCloudJob {
     sensor_msgs::msg::PointCloud2::SharedPtr cloud_msg;
@@ -437,7 +510,11 @@ private:
   void enqueuePublish(pcl::PointCloud<PointType>::ConstPtr cloud,
                       const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
                       const Eigen::Ref<const Eigen::Matrix4f>& T_all,
-                      double scanStamp);
+                      double scanStamp,
+                      const Eigen::Vector3f& state_p_scan,
+                      const Eigen::Quaternionf& state_q_scan,
+                      const Eigen::Vector3f& state_vlin_b_scan,
+                      const Eigen::Vector3f& state_vang_b_scan);
 
 
 };
