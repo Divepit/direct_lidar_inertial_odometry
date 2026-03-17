@@ -12,7 +12,6 @@ Panels:
         - /Odometry1/Pose1/Shape1
         - /GridMap1
         - /Marker1
-        - /RobotModel1/Status1
       Splitter Ratio: 0.6470588445663452
     Tree Height: 1163
   - Class: rviz/Selection
@@ -281,7 +280,7 @@ Visualization Manager:
       Marker Topic: /height_scan
       Name: Marker
       Namespaces:
-        g1: true
+        {}
       Queue Size: 100
       Value: true
     - Alpha: 1
@@ -512,6 +511,17 @@ Visualization Manager:
       Update Interval: 0
       Value: true
       Visual Enabled: true
+    - Alpha: 1
+      Class: rviz/PointStamped
+      Color: 204; 41; 204
+      Enabled: true
+      History Length: 1
+      Name: PointStamped
+      Queue Size: 10
+      Radius: 0.20000000298023224
+      Topic: /clicked_point
+      Unreliable: false
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 0; 0; 0
@@ -540,7 +550,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 1.8529373407363892
+      Distance: 3.5440707206726074
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -548,17 +558,17 @@ Visualization Manager:
         Value: false
       Field of View: 1
       Focal Point:
-        X: 0.15271314978599548
-        Y: -0.19281135499477386
-        Z: -0.11820589751005173
+        X: 0.13879740238189697
+        Y: -0.17954032123088837
+        Z: -0.29581418633461
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.3100004196166992
+      Pitch: 0.2650003433227539
       Target Frame: robot/base_link
-      Yaw: 4.77001953125
+      Yaw: 4.455020427703857
     Saved: ~
 Window Geometry:
   Displays:
