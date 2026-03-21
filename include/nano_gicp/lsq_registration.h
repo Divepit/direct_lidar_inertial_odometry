@@ -146,6 +146,9 @@ protected:
 
   virtual double linearize(const Eigen::Isometry3d& trans, Eigen::Matrix<double, 6, 6>* H = nullptr, Eigen::Matrix<double, 6, 1>* b = nullptr) = 0;
   virtual double compute_error(const Eigen::Isometry3d& trans) = 0;
+  // Evaluate cost at trans using correspondences frozen from the last linearize() call.
+  // Default falls back to compute_error (refreshes correspondences).
+  virtual double compute_error_frozen(const Eigen::Isometry3d& trans) { return compute_error(trans); }
 
   bool step_optimize(Eigen::Isometry3d& x0, Eigen::Isometry3d& delta);
   bool step_gn(Eigen::Isometry3d& x0, Eigen::Isometry3d& delta);

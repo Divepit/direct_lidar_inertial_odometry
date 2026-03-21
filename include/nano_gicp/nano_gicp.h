@@ -120,6 +120,7 @@ protected:
   virtual double linearize(const Eigen::Isometry3d& trans, Eigen::Matrix<double, 6, 6>* H, Eigen::Matrix<double, 6, 1>* b) override;
 
   virtual double compute_error(const Eigen::Isometry3d& trans) override;
+  virtual double compute_error_frozen(const Eigen::Isometry3d& trans) override;
 
   template<typename PointT>
   bool calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud, const nanoflann::KdTreeFLANN<PointT>& kdtree, CovarianceList& covariances, float& density);
@@ -152,6 +153,11 @@ protected:
 
   std::vector<int> correspondences_;
   std::vector<float> sq_distances_;
+
+  // Set by computeInitialHessianAtGuess() after building correspondences.
+  // Causes the first linearize() call in the subsequent align() to skip
+  // update_correspondences(), avoiding a redundant k-NN pass.
+  bool correspondences_precomputed_;
 };
 }  // namespace nano_gicp
 

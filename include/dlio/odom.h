@@ -44,6 +44,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 
 #include <array>
+#include <deque>
 
 class dlio::OdomNode: public rclcpp::Node {
 
@@ -193,6 +194,12 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
   nav_msgs::msg::Path path_map_prop_ros;
   geometry_msgs::msg::PoseArray kf_pose_ros;
 
+  // Deque-backed pose histories for O(1) front-removal.
+  // Copied into the corresponding Path message only when subscribers exist.
+  std::deque<geometry_msgs::msg::PoseStamped> path_poses_;
+  std::deque<geometry_msgs::msg::PoseStamped> path_odom_poses_;
+  std::deque<geometry_msgs::msg::PoseStamped> path_map_prop_poses_;
+
   // Flags
   std::atomic<bool> dlio_initialized;
   std::atomic<bool> first_valid_scan;
@@ -269,7 +276,11 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
   double scan_stamp;
   double prev_scan_stamp;
   double scan_dt;
-  std::vector<double> comp_times;
+  // Each entry: {scan_stamp (s), computation_time (s)}.
+  // Trimmed to a rolling 2-second window by processPointCloud().
+  std::deque<std::pair<double, double>> comp_times;
+  std::mutex mtx_comp_times_;
+  std::mutex mtx_debug_; // prevents concurrent debug() calls from racing on cpu state
   std::vector<double> imu_rates;
   std::vector<double> lidar_rates;
 

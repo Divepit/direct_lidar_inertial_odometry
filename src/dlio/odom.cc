@@ -13,6 +13,7 @@
 #include "dlio/odom.h"
 #include "dlio/utils.h"
 
+#include <iomanip>
 #include <queue>
 #include <algorithm>
 
@@ -120,11 +121,6 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   rclcpp::QoS reliable_qos(rclcpp::KeepLast(10));
   reliable_qos.reliability(RMW_QOS_POLICY_RELIABILITY_RELIABLE);
   this->odom_map_pub = this->create_publisher<nav_msgs::msg::Odometry>("map_pose", reliable_qos);
-
-  rclcpp::QoS qos( rclcpp::KeepLast(1) );
-  qos.best_effort();
-  qos.durability_volatile();
-  qos.reliability( RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT );
 
   auto best_effort_qos = rclcpp::QoS(100)
                              .reliability(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT)
@@ -357,8 +353,6 @@ void dlio::OdomNode::enqueuePublish(
 
   {
     std::lock_guard<std::mutex> lk(q_mtx_);
-    // Drop oldest if queue is backing up (keeps latency low)
-    if (q_.size() > 2) q_.pop_front();
     q_.push_back(std::move(job));
   }
   q_cv_.notify_one();
@@ -830,13 +824,12 @@ void dlio::OdomNode::publishToROS(
   path_pose.pose.orientation.z = q_mb.z();
 
   constexpr size_t kMaxPath = 1500;
-  if (this->path_ros.poses.size() >= kMaxPath) {
-    this->path_ros.poses.erase(
-        this->path_ros.poses.begin(),
-        this->path_ros.poses.begin() + (this->path_ros.poses.size() - kMaxPath + 1));
+  if (this->path_poses_.size() >= kMaxPath) {
+    this->path_poses_.pop_front();
   }
-  this->path_ros.poses.push_back(std::move(path_pose));
+  this->path_poses_.push_back(std::move(path_pose));
   if (hasSubscribers(this->path_pub)) {
+    this->path_ros.poses.assign(this->path_poses_.begin(), this->path_poses_.end());
     this->path_pub->publish(this->path_ros);
   }
 
@@ -941,94 +934,60 @@ void dlio::OdomNode::publishCloud(
   //   1) deskewed                 : in dlio_odom
   //   2) deskewed_not_transformed : in base_link
   //   3) deskewed_and_transformed_to_map : in dlio_map
-  const Eigen::Matrix4f T_odom_map = T_map_odom.inverse();
-  const Eigen::Matrix4f T_revert = T_all.inverse() * T_cloud;
+  // Each view is only computed and published when its topic has a subscriber.
+  const bool want_odom = hasSubscribers(this->deskewed_pub);
+  const bool want_base = hasSubscribers(this->deskewed_not_transformed_pub);
+  const bool want_map  = hasSubscribers(this->deskewed_map_pub);
 
-  sensor_msgs::msg::PointCloud2 deskewed_ros;
-  sensor_msgs::msg::PointCloud2 deskewed_original_ros;
-  sensor_msgs::msg::PointCloud2 deskewed_map_ros;
-
-  prepare_xyz_msg(deskewed_ros, this->odom_frame, cloud_stamp, n);
-  prepare_xyz_msg(deskewed_original_ros, this->baselink_frame, cloud_stamp, n);
-  prepare_xyz_msg(deskewed_map_ros, "dlio_map", cloud_stamp, n);
-
-  sensor_msgs::PointCloud2Iterator<float> x1(deskewed_ros, "x");
-  sensor_msgs::PointCloud2Iterator<float> y1(deskewed_ros, "y");
-  sensor_msgs::PointCloud2Iterator<float> z1(deskewed_ros, "z");
-
-  sensor_msgs::PointCloud2Iterator<float> x2(deskewed_original_ros, "x");
-  sensor_msgs::PointCloud2Iterator<float> y2(deskewed_original_ros, "y");
-  sensor_msgs::PointCloud2Iterator<float> z2(deskewed_original_ros, "z");
-
-  sensor_msgs::PointCloud2Iterator<float> x3(deskewed_map_ros, "x");
-  sensor_msgs::PointCloud2Iterator<float> y3(deskewed_map_ros, "y");
-  sensor_msgs::PointCloud2Iterator<float> z3(deskewed_map_ros, "z");
-
-  bool all_finite_odom = true;
-  bool all_finite_base = true;
-  bool all_finite_map = true;
-
-  for (size_t i = 0; i < n; ++i, ++x1, ++y1, ++z1, ++x2, ++y2, ++z2, ++x3, ++y3, ++z3) {
-    const auto& p = (*cloud)[i];
-    const Eigen::Vector4f v(p.x, p.y, p.z, 1.f);
-
-    // Current cloud sample in map frame after scan-to-submap correction.
-    const Eigen::Vector4f v_map = T_cloud * v;
-
-    // Re-express the same point in the scan-time dlio_odom frame.
-    // This must match the exact scan-time TF published in publishToROS().
-    const Eigen::Vector4f v_odom = T_odom_map * v_map;
-
-    // Re-express the point back in base_link using the scan-time map->base pose.
-    const Eigen::Vector4f v_base = T_revert * v;
-
-    *x1 = v_odom.x();
-    *y1 = v_odom.y();
-    *z1 = v_odom.z();
-
-    *x2 = v_base.x();
-    *y2 = v_base.y();
-    *z2 = v_base.z();
-
-    *x3 = v_map.x();
-    *y3 = v_map.y();
-    *z3 = v_map.z();
-
-    all_finite_odom =
-        all_finite_odom &&
-        std::isfinite(v_odom.x()) &&
-        std::isfinite(v_odom.y()) &&
-        std::isfinite(v_odom.z());
-
-    all_finite_base =
-        all_finite_base &&
-        std::isfinite(v_base.x()) &&
-        std::isfinite(v_base.y()) &&
-        std::isfinite(v_base.z());
-
-    all_finite_map =
-        all_finite_map &&
-        std::isfinite(v_map.x()) &&
-        std::isfinite(v_map.y()) &&
-        std::isfinite(v_map.z());
+  if (!want_odom && !want_base && !want_map) {
+    return;
   }
 
-  deskewed_ros.is_dense = all_finite_odom;
-  deskewed_original_ros.is_dense = all_finite_base;
-  deskewed_map_ros.is_dense = all_finite_map;
-
-  auto m1 = std::make_unique<sensor_msgs::msg::PointCloud2>(std::move(deskewed_ros));
-  auto m2 = std::make_unique<sensor_msgs::msg::PointCloud2>(std::move(deskewed_original_ros));
-  auto m3 = std::make_unique<sensor_msgs::msg::PointCloud2>(std::move(deskewed_map_ros));
-
-  if (hasSubscribers(this->deskewed_pub)) {
-    this->deskewed_pub->publish(std::move(m1));
+  if (want_odom) {
+    const Eigen::Matrix4f T_odom_map = T_map_odom.inverse();
+    sensor_msgs::msg::PointCloud2 msg;
+    prepare_xyz_msg(msg, this->odom_frame, cloud_stamp, n);
+    sensor_msgs::PointCloud2Iterator<float> x(msg, "x"), y(msg, "y"), z(msg, "z");
+    bool all_finite = true;
+    for (size_t i = 0; i < n; ++i, ++x, ++y, ++z) {
+      const auto& p = (*cloud)[i];
+      const Eigen::Vector4f v_odom = T_odom_map * (T_cloud * Eigen::Vector4f(p.x, p.y, p.z, 1.f));
+      *x = v_odom.x(); *y = v_odom.y(); *z = v_odom.z();
+      all_finite = all_finite && std::isfinite(v_odom.x()) && std::isfinite(v_odom.y()) && std::isfinite(v_odom.z());
+    }
+    msg.is_dense = all_finite;
+    this->deskewed_pub->publish(std::move(msg));
   }
-  if (hasSubscribers(this->deskewed_not_transformed_pub)) {
-    this->deskewed_not_transformed_pub->publish(std::move(m2));
+
+  if (want_base) {
+    const Eigen::Matrix4f T_revert = T_all.inverse() * T_cloud;
+    sensor_msgs::msg::PointCloud2 msg;
+    prepare_xyz_msg(msg, this->baselink_frame, cloud_stamp, n);
+    sensor_msgs::PointCloud2Iterator<float> x(msg, "x"), y(msg, "y"), z(msg, "z");
+    bool all_finite = true;
+    for (size_t i = 0; i < n; ++i, ++x, ++y, ++z) {
+      const auto& p = (*cloud)[i];
+      const Eigen::Vector4f v_base = T_revert * Eigen::Vector4f(p.x, p.y, p.z, 1.f);
+      *x = v_base.x(); *y = v_base.y(); *z = v_base.z();
+      all_finite = all_finite && std::isfinite(v_base.x()) && std::isfinite(v_base.y()) && std::isfinite(v_base.z());
+    }
+    msg.is_dense = all_finite;
+    this->deskewed_not_transformed_pub->publish(std::move(msg));
   }
-  if (hasSubscribers(this->deskewed_map_pub)) {
-    this->deskewed_map_pub->publish(std::move(m3));
+
+  if (want_map) {
+    sensor_msgs::msg::PointCloud2 msg;
+    prepare_xyz_msg(msg, "dlio_map", cloud_stamp, n);
+    sensor_msgs::PointCloud2Iterator<float> x(msg, "x"), y(msg, "y"), z(msg, "z");
+    bool all_finite = true;
+    for (size_t i = 0; i < n; ++i, ++x, ++y, ++z) {
+      const auto& p = (*cloud)[i];
+      const Eigen::Vector4f v_map = T_cloud * Eigen::Vector4f(p.x, p.y, p.z, 1.f);
+      *x = v_map.x(); *y = v_map.y(); *z = v_map.z();
+      all_finite = all_finite && std::isfinite(v_map.x()) && std::isfinite(v_map.y()) && std::isfinite(v_map.z());
+    }
+    msg.is_dense = all_finite;
+    this->deskewed_map_pub->publish(std::move(msg));
   }
 }
 
@@ -1062,23 +1021,20 @@ void dlio::OdomNode::publishKeyframe(
     this->kf_pose_pub->publish(this->kf_pose_ros);
   }
 
-  if (this->vf_use_) {
-    if (kf.second->points.size() == kf.second->width * kf.second->height) {
+  if (hasSubscribers(this->kf_cloud_pub)) {
+    auto publish_kf_cloud = [&]() {
       sensor_msgs::msg::PointCloud2 keyframe_cloud_ros;
       pcl::toROSMsg(*kf.second, keyframe_cloud_ros);
       keyframe_cloud_ros.header.stamp = timestamp;
       keyframe_cloud_ros.header.frame_id = "dlio_map";
-      if (hasSubscribers(this->kf_cloud_pub)) {
-        this->kf_cloud_pub->publish(keyframe_cloud_ros);
-      }
-    }
-  } else {
-    sensor_msgs::msg::PointCloud2 keyframe_cloud_ros;
-    pcl::toROSMsg(*kf.second, keyframe_cloud_ros);
-    keyframe_cloud_ros.header.stamp = timestamp;
-    keyframe_cloud_ros.header.frame_id = "dlio_map";
-    if (hasSubscribers(this->kf_cloud_pub)) {
       this->kf_cloud_pub->publish(keyframe_cloud_ros);
+    };
+    if (this->vf_use_) {
+      if (kf.second->points.size() == kf.second->width * kf.second->height) {
+        publish_kf_cloud();
+      }
+    } else {
+      publish_kf_cloud();
     }
   }
 }
@@ -1099,11 +1055,6 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
 
   this->scan_header_stamp = pc->header.stamp;
   this->original_scan = original_scan_;
-
-  if (original_scan_->empty()) {
-    this->deskew_ = false;
-    return;
-  }
 
   // automatically detect sensor type
   if (this->sensor == dlio::SensorType::UNKNOWN) {
@@ -1264,7 +1215,8 @@ void dlio::OdomNode::deskewPointcloud() {
       { return p1.value().timestamp != p2.value().timestamp; };
     extract_point_time = [&sweep_ref_time](boost::range::index_value<PointType&, long> pt)
       { return pt.value().timestamp * 1e-9f; };
-  } else {
+  
+    } else {
     this->deskewed_scan = std::make_shared<const pcl::PointCloud<PointType>>(*this->original_scan);
     this->deskew_status = false;
     this->deskew_size = 0;
@@ -1376,7 +1328,26 @@ if (!this->first_valid_scan) {
   // if there are no frames between the start and end of the sweep
   // that probably means that there's a sync issue
   if (frames.size() != timestamps.size()) {
-    RCLCPP_FATAL(this->get_logger(),"Bad time sync between LiDAR and IMU!");
+    // clang-format off
+    std::cerr
+      << "\033[1;41m\033[1;37m"
+      << "\n"
+      << "  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!  \n"
+      << "  !!                                                                            !!  \n"
+      << "  !!   DESKEW FAILED: integrateImu returned " << std::setw(5) << frames.size()
+                                    << " frames for " << std::setw(5) << timestamps.size() << " points   !!  \n"
+      << "  !!   Scan will be published WITHOUT per-point motion compensation.            !!  \n"
+      << "  !!   Likely cause: IMU buffer gap or bad LiDAR/IMU time sync.                !!  \n"
+      << "  !!   prev_scan_stamp=" << std::fixed << std::setprecision(6) << this->prev_scan_stamp
+                         << "  scan_end=" << timestamps.back() << "                          !!  \n"
+      << "  !!                                                                            !!  \n"
+      << "  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!  \n"
+      << "\033[0m\n";
+    // clang-format on
+    RCLCPP_FATAL(this->get_logger(),
+      "DESKEW FAILED: integrateImu got %zu frames for %zu point timestamps "
+      "(prev_scan_stamp=%.6f scan_end=%.6f). Scan published at T_prior without deskewing.",
+      frames.size(), timestamps.size(), this->prev_scan_stamp, timestamps.back());
 
     this->T_prior = this->T;
     pcl::transformPointCloud (*deskewed_scan_, *deskewed_scan_, this->T_prior * this->extrinsics.baselink2lidar_T);
@@ -1451,7 +1422,10 @@ void dlio::OdomNode::processPointCloud(const sensor_msgs::msg::PointCloud2::Shar
   this->main_loop_running = true;
   lock.unlock();
 
-  double then = this->now().seconds();
+  // Use steady_clock, not this->now(), which is the ROS node clock.
+  // When use_sim_time=true the ROS clock is driven by /clock messages and
+  // does not advance during computation, so now()-then would be ~0.
+  const auto then = std::chrono::steady_clock::now();
 
   if (this->first_scan_stamp == 0.) {
     this->first_scan_stamp = rclcpp::Time(pc->header.stamp).seconds();
@@ -1597,18 +1571,22 @@ void dlio::OdomNode::processPointCloud(const sensor_msgs::msg::PointCloud2::Shar
                        state_vlin_b_scan,
                        state_vang_b_scan);
 
-  // Update some statistics
-  this->comp_times.push_back(this->now().seconds() - then);
-
-  if (this->comp_times.size() > 400) {
-    this->comp_times.erase(this->comp_times.begin(), this->comp_times.end() - 400);
+  // Update computation time statistics: rolling 2-second window keyed by scan_stamp.
+  {
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - then).count();
+    std::lock_guard<std::mutex> lk(this->mtx_comp_times_);
+    this->comp_times.push_back({this->scan_stamp, elapsed});
+    const double cutoff = this->scan_stamp - 2.0;
+    while (!this->comp_times.empty() && this->comp_times.front().first < cutoff) {
+      this->comp_times.pop_front();
+    }
   }
 
   // this->gicp_hasConverged = this->gicp.hasConverged();
 
   // Debug statements and publish custom DLIO message
-  // this->debug_thread = std::thread(&dlio::OdomNode::debug, this);
-  // this->debug_thread.detach();
+  this->debug_thread = std::thread(&dlio::OdomNode::debug, this);
+  this->debug_thread.detach();
 
   this->geo.first_opt_done = true;
 }
@@ -1850,13 +1828,12 @@ void dlio::OdomNode::publishPoseSnapshot() {
   pose_odom.pose.orientation.z = q.z();
 
   constexpr size_t kMaxOdomPath = 10000;
-  if (this->path_odom_ros.poses.size() >= kMaxOdomPath) {
-    this->path_odom_ros.poses.erase(
-      this->path_odom_ros.poses.begin(),
-      this->path_odom_ros.poses.begin() + (this->path_odom_ros.poses.size() - kMaxOdomPath + 1));
+  if (this->path_odom_poses_.size() >= kMaxOdomPath) {
+    this->path_odom_poses_.pop_front();
   }
-  this->path_odom_ros.poses.push_back(std::move(pose_odom));
+  this->path_odom_poses_.push_back(std::move(pose_odom));
   if (hasSubscribers(this->path_odom_pub)) {
+    this->path_odom_ros.poses.assign(this->path_odom_poses_.begin(), this->path_odom_poses_.end());
     this->path_odom_pub->publish(this->path_odom_ros);
   }
 
@@ -1895,13 +1872,12 @@ void dlio::OdomNode::publishPoseSnapshot() {
     pose_map_prop.pose.orientation.z = q_mb_prop.z();
 
     constexpr size_t kMaxMapPropPath = 10000;
-    if (this->path_map_prop_ros.poses.size() >= kMaxMapPropPath) {
-      this->path_map_prop_ros.poses.erase(
-        this->path_map_prop_ros.poses.begin(),
-        this->path_map_prop_ros.poses.begin() + (this->path_map_prop_ros.poses.size() - kMaxMapPropPath + 1));
+    if (this->path_map_prop_poses_.size() >= kMaxMapPropPath) {
+      this->path_map_prop_poses_.pop_front();
     }
-    this->path_map_prop_ros.poses.push_back(std::move(pose_map_prop));
+    this->path_map_prop_poses_.push_back(std::move(pose_map_prop));
     if (hasSubscribers(this->path_map_prop_pub)) {
+      this->path_map_prop_ros.poses.assign(this->path_map_prop_poses_.begin(), this->path_map_prop_poses_.end());
       this->path_map_prop_pub->publish(this->path_map_prop_ros);
     }
   }
@@ -1934,6 +1910,10 @@ void dlio::OdomNode::publishCorrectionMarker(
     return;
   }
 
+  if (!hasSubscribers(this->pub_corr_marker_)) {
+    return;
+  }
+
   // Recover T_prior from T_all = T_corr * T_prior without a full 4x4 inverse.
   const Eigen::Matrix3f R_corr = T_corr.block<3,3>(0,0);
   const Eigen::Vector3f t_corr = T_corr.block<3,1>(0,3);
@@ -1943,9 +1923,7 @@ void dlio::OdomNode::publishCorrectionMarker(
 
   visualization_msgs::msg::Marker marker;
   this->createCorrectionMarker("dlio_map", stamp, p_prior, corr_vec, marker);
-  if (hasSubscribers(this->pub_corr_marker_)) {
-    this->pub_corr_marker_->publish(marker);
-  }
+  this->pub_corr_marker_->publish(marker);
 }
 
 void dlio::OdomNode::analyzeDegeneracyFromMatrix(
@@ -2400,23 +2378,23 @@ void dlio::OdomNode::getNextPose() {
     this->analyzeDegeneracyFromMatrix(H0, this->T_prior);
 
     // Print the translation eigensystem for every scan.
-    if (this->degen_info_.valid) {
-      logTranslationSpectrumAlways(
-          this->get_logger(),
-          this->degen_info_.eigvals_trans_dec,
-          this->degen_info_.eigvecs_trans_map);
-    }
+    // if (this->degen_info_.valid) {
+    //   logTranslationSpectrumAlways(
+    //       this->get_logger(),
+    //       this->degen_info_.eigvals_trans_dec,
+    //       this->degen_info_.eigvecs_trans_map);
+    // }
 
     degeneracy_detected =
         this->degen_info_.valid && hasWeakDirection(this->degen_info_.weak_trans);
 
-    if (degeneracy_detected) {
-      logTranslationDegeneracy(
-          this->get_logger(),
-          this->degen_info_.eigvals_trans_dec,
-          this->degen_info_.eigvecs_trans_map,
-          this->degen_info_.weak_trans);
-    }
+    // if (degeneracy_detected) {
+    //   logTranslationDegeneracy(
+    //       this->get_logger(),
+    //       this->degen_info_.eigvals_trans_dec,
+    //       this->degen_info_.eigvecs_trans_map,
+    //       this->degen_info_.weak_trans);
+    // }
 
     this->publishDegeneracyMarkers(this->scan_header_stamp);
   } else {
@@ -3229,18 +3207,21 @@ void dlio::OdomNode::buildSubmap(State vehicle_state) {
     pcl::PointCloud<PointType>::Ptr submap_cloud_ = std::make_shared<pcl::PointCloud<PointType>>();
     std::shared_ptr<nano_gicp::CovarianceList> submap_normals_ (std::make_shared<nano_gicp::CovarianceList>());
 
-    for (auto k : this->submap_kf_idx_curr) {
+    {
       std::unique_lock<decltype(this->keyframes_mutex)> submap_lock(this->keyframes_mutex);
-      if (k < 0 || k >= this->keyframes.size() || k >= this->keyframe_normals.size()) {
-        continue;
+      for (auto k : this->submap_kf_idx_curr) {
+        if (k < 0 || k >= static_cast<int>(this->keyframes.size()) ||
+            k >= static_cast<int>(this->keyframe_normals.size())) {
+          continue;
+        }
+
+        // create current submap cloud
+        *submap_cloud_ += *this->keyframes[k].second;
+
+        // grab corresponding submap cloud's normals
+        submap_normals_->insert( std::end(*submap_normals_),
+            std::begin(*(this->keyframe_normals[k])), std::end(*(this->keyframe_normals[k])) );
       }
-
-      // create current submap cloud
-      *submap_cloud_ += *this->keyframes[k].second;
-
-      // grab corresponding submap cloud's normals
-      submap_normals_->insert( std::end(*submap_normals_),
-          std::begin(*(this->keyframe_normals[k])), std::end(*(this->keyframe_normals[k])) );
     }
 
     this->submap_cloud = submap_cloud_;
@@ -3298,32 +3279,31 @@ void dlio::OdomNode::pauseSubmapBuildIfNeeded() {
 
 void dlio::OdomNode::debug() {
 
-  // Total length traversed
-  double length_traversed = 0.;
-  Eigen::Vector3f p_curr = Eigen::Vector3f(0., 0., 0.);
-  Eigen::Vector3f p_prev = Eigen::Vector3f(0., 0., 0.);
-  for (const auto& t : this->trajectory) {
-    if (p_prev == Eigen::Vector3f(0., 0., 0.)) {
-      p_prev = t.first;
-      continue;
-    }
-    p_curr = t.first;
-    double l = sqrt(pow(p_curr[0] - p_prev[0], 2) + pow(p_curr[1] - p_prev[1], 2) + pow(p_curr[2] - p_prev[2], 2));
+  // Only one debug() call may run at a time: concurrent calls race on cpu_percents
+  // and the CPU usage sampling state (lastCPU/lastSysCPU/lastUserCPU).
+  std::unique_lock<std::mutex> debug_lock(this->mtx_debug_, std::try_to_lock);
+  if (!debug_lock.owns_lock()) {
+    return;
+  }
 
-    if (l >= 0.1) {
-      length_traversed += l;
-      p_prev = p_curr;
+  // length_traversed is already maintained incrementally in processPointCloud().
+  const double length_traversed = this->length_traversed;
+
+  // Snapshot comp_times under lock to avoid racing with processPointCloud().
+  std::vector<double> comp_snapshot;
+  {
+    std::lock_guard<std::mutex> lk(this->mtx_comp_times_);
+    comp_snapshot.reserve(this->comp_times.size());
+    for (const auto& [ts, ct] : this->comp_times) {
+      comp_snapshot.push_back(ct);
     }
   }
-  this->length_traversed = length_traversed;
 
-  // Average computation time
-  double avg_comp_time =
-    std::accumulate(this->comp_times.begin(), this->comp_times.end(), 0.0) / this->comp_times.size();
-
-  // Average sensor rates
-  int win_size = 100;
-  (void)win_size;
+  const double avg_comp_time = comp_snapshot.empty() ? 0.0 :
+    std::accumulate(comp_snapshot.begin(), comp_snapshot.end(), 0.0) / comp_snapshot.size();
+  const double max_comp_time = comp_snapshot.empty() ? 0.0 :
+    *std::max_element(comp_snapshot.begin(), comp_snapshot.end());
+  const double last_comp_time = comp_snapshot.empty() ? 0.0 : comp_snapshot.back();
 
   // RAM Usage
   double vm_usage = 0.0;
@@ -3446,9 +3426,9 @@ void dlio::OdomNode::debug() {
 
   std::cout << std::right << std::setprecision(2) << std::fixed;
   std::cout << "| Computation Time :: "
-    << std::setfill(' ') << std::setw(6) << this->comp_times.back()*1000. << " ms    // Avg: "
+    << std::setfill(' ') << std::setw(6) << last_comp_time*1000. << " ms    // Avg: "
     << std::setw(6) << avg_comp_time*1000. << " / Max: "
-    << std::setw(6) << *std::max_element(this->comp_times.begin(), this->comp_times.end())*1000.
+    << std::setw(6) << max_comp_time*1000.
     << "     |" << std::endl;
   std::cout << "| Cores Utilized   :: "
     << std::setfill(' ') << std::setw(6) << (cpu_percent/100.) * this->numProcessors << " cores // Avg: "

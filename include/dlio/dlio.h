@@ -12,6 +12,7 @@
 
 // SYSTEM
 #include <atomic>
+#include <chrono>
 
 #ifdef HAS_CPUID
 #include <cpuid.h>

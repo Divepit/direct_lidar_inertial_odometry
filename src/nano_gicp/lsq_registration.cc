@@ -49,172 +49,6 @@ template class nano_gicp::LsqRegistration<PointType, PointType>;
 
 namespace nano_gicp {
 
-namespace {
-// LM linear-system backend toggle (file-local):
-//   false -> LDLT only (faster, less robust on ill-conditioned systems)
-//   true  -> SVD only  (more robust, higher compute cost)
-constexpr bool kLmUseSvdOnly = true;
-}
-
-static bool pcg_solve_6x6(
-    const Eigen::Matrix<double, 6, 6>& A,
-    const Eigen::Matrix<double, 6, 1>& rhs,
-    const Eigen::Matrix<double, 6, 6>& M_inv,
-    Eigen::Matrix<double, 6, 1>& x,
-    const int max_iters,
-    const double rel_tol,
-    const double abs_tol)
-{
-  x.setZero();
-
-  Eigen::Matrix<double, 6, 1> r = rhs - A * x;
-  if (!r.allFinite()) {
-    return false;
-  }
-
-  const double rhs_norm = rhs.norm();
-  const double tol = std::max(abs_tol, rel_tol * rhs_norm);
-
-  if (r.norm() <= tol) {
-    return true;
-  }
-
-  Eigen::Matrix<double, 6, 1> z = M_inv * r;
-  if (!z.allFinite()) {
-    return false;
-  }
-
-  Eigen::Matrix<double, 6, 1> p = z;
-  double rz_old = r.dot(z);
-
-  if (!std::isfinite(rz_old) || rz_old <= 0.0) {
-    return false;
-  }
-
-  for (int k = 0; k < max_iters; ++k) {
-    const Eigen::Matrix<double, 6, 1> Ap = A * p;
-    const double denom = p.dot(Ap);
-
-    if (!std::isfinite(denom) || denom <= 0.0) {
-      return false;
-    }
-
-    const double alpha = rz_old / denom;
-    x.noalias() += alpha * p;
-    r.noalias() -= alpha * Ap;
-
-    if (!x.allFinite() || !r.allFinite()) {
-      return false;
-    }
-
-    if (r.norm() <= tol) {
-      return true;
-    }
-
-    z = M_inv * r;
-    if (!z.allFinite()) {
-      return false;
-    }
-
-    const double rz_new = r.dot(z);
-    if (!std::isfinite(rz_new) || rz_new <= 0.0) {
-      return false;
-    }
-
-    const double beta = rz_new / rz_old;
-    p = z + beta * p;
-    rz_old = rz_new;
-  }
-
-  return x.allFinite();
-}
-
-static Eigen::Matrix<double, 6, 6> build_lm_pcg_preconditioner(
-    const Eigen::Matrix<double, 6, 6>& A,
-    const double kappa_rot,
-    const double kappa_trans,
-    const double schur_eps,
-    const double clamp_eps)
-{
-  using Mat3 = Eigen::Matrix3d;
-  using Mat6 = Eigen::Matrix<double, 6, 6>;
-  using Vec3 = Eigen::Vector3d;
-
-  const Mat3 I = Mat3::Identity();
-
-  Mat3 Arr = A.block<3,3>(0,0);
-  Mat3 Art = A.block<3,3>(0,3);
-  Mat3 Atr = A.block<3,3>(3,0);
-  Mat3 Att = A.block<3,3>(3,3);
-
-  Arr = 0.5 * (Arr + Arr.transpose());
-  Att = 0.5 * (Att + Att.transpose());
-
-  auto solve3 = [](const Mat3& M, const Mat3& B) -> Mat3 {
-    Eigen::LDLT<Mat3> ldlt(M);
-    if (ldlt.info() == Eigen::Success) {
-      Mat3 X = ldlt.solve(B);
-      if (X.allFinite()) {
-        return X;
-      }
-    }
-
-    Eigen::JacobiSVD<Mat3> svd(M, Eigen::ComputeFullU | Eigen::ComputeFullV);
-    const Vec3 s = svd.singularValues();
-    Mat3 S_inv = Mat3::Zero();
-    const double tol = 1e-12 * std::max(1.0, s.maxCoeff());
-    for (int i = 0; i < 3; ++i) {
-      if (s(i) > tol) {
-        S_inv(i, i) = 1.0 / s(i);
-      }
-    }
-    return svd.matrixV() * S_inv * svd.matrixU().transpose() * B;
-  };
-
-  Mat3 Sr = Arr - Art * solve3(Att + schur_eps * I, Atr);
-  Mat3 St = Att - Atr * solve3(Arr + schur_eps * I, Art);
-
-  Sr = 0.5 * (Sr + Sr.transpose());
-  St = 0.5 * (St + St.transpose());
-
-  Eigen::SelfAdjointEigenSolver<Mat3> es_r(Sr);
-  Eigen::SelfAdjointEigenSolver<Mat3> es_t(St);
-
-  Mat6 M_inv = Mat6::Zero();
-
-  if (es_r.info() != Eigen::Success || es_t.info() != Eigen::Success) {
-    // fallback: diagonal preconditioner on A
-    for (int i = 0; i < 6; ++i) {
-      const double aii = std::max(std::abs(A(i, i)), clamp_eps);
-      M_inv(i, i) = 1.0 / aii;
-    }
-    return M_inv;
-  }
-
-  const Vec3 eval_r = es_r.eigenvalues().cwiseMax(clamp_eps);
-  const Vec3 eval_t = es_t.eigenvalues().cwiseMax(clamp_eps);
-  const Mat3 U_r = es_r.eigenvectors();
-  const Mat3 U_t = es_t.eigenvectors();
-
-  const double floor_r = std::max(eval_r.maxCoeff() / std::max(kappa_rot, 1.0), clamp_eps);
-  const double floor_t = std::max(eval_t.maxCoeff() / std::max(kappa_trans, 1.0), clamp_eps);
-
-  Vec3 eval_r_clamped = eval_r;
-  Vec3 eval_t_clamped = eval_t;
-  for (int i = 0; i < 3; ++i) {
-    eval_r_clamped(i) = std::max(eval_r(i), floor_r);
-    eval_t_clamped(i) = std::max(eval_t(i), floor_t);
-  }
-
-  const Mat3 Minv_r = U_r * eval_r_clamped.cwiseInverse().asDiagonal() * U_r.transpose();
-  const Mat3 Minv_t = U_t * eval_t_clamped.cwiseInverse().asDiagonal() * U_t.transpose();
-
-  M_inv.block<3,3>(0,0) = 0.5 * (Minv_r + Minv_r.transpose());
-  M_inv.block<3,3>(3,3) = 0.5 * (Minv_t + Minv_t.transpose());
-
-  return M_inv;
-}
-
 template <typename PointTarget, typename PointSource>
 LsqRegistration<PointTarget, PointSource>::LsqRegistration() {
   this->reg_name_ = "LsqRegistration";
@@ -406,12 +240,10 @@ bool LsqRegistration<PointTarget, PointSource>::step_gn(Eigen::Isometry3d& x0, E
 template <typename PointTarget, typename PointSource>
 bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0,
                                                         Eigen::Isometry3d& delta) {
-  // Linearize at current x0
   Eigen::Matrix<double, 6, 6> H;
   Eigen::Matrix<double, 6, 1> b;
   const double y0 = linearize(x0, &H, &b);
 
-  // Symmetrize (safer rho prediction)
   H = 0.5 * (H + H.transpose());
 
   if (!std::isfinite(y0) || !H.allFinite() || !b.allFinite()) {
@@ -421,16 +253,13 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0,
     return false;
   }
 
-  // Column scaling: S = diag(1 / sqrt(max(|Hii|, eps)))
   constexpr double kEps = 1e-12;
   Eigen::Matrix<double, 6, 1> s = H.diagonal().cwiseAbs().cwiseMax(kEps).cwiseSqrt();
   Eigen::Matrix<double, 6, 6> S = s.cwiseInverse().asDiagonal();
 
-  // Solve in scaled coordinates for better conditioning.
   Eigen::Matrix<double, 6, 6> Hs = S * H * S;
   Eigen::Matrix<double, 6, 1> bs = S * b;
 
-  // Init LM lambda (scaled space)
   if (lm_lambda_ < 0.0) {
     lm_lambda_ = lm_init_lambda_factor_ * Hs.diagonal().cwiseAbs().maxCoeff();
   }
@@ -439,53 +268,33 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0,
   constexpr double kLambdaMin = 1e-18;
   constexpr double kLambdaMax = 1e30;
 
-  // Trust-region caps (tune to your scene scale)
-  constexpr double kMaxRotStep   = 0.35;  // rad
-  constexpr double kMaxTransStep = 0.30;  // m
+  constexpr double kMaxRotStep   = 0.35;
+  constexpr double kMaxTransStep = 0.30;
 
-  // Diagonal damping in scaled space
   const Eigen::Matrix<double, 6, 6> diagHs = Hs.diagonal().asDiagonal();
 
   for (int i = 0; i < lm_max_iterations_; ++i) {
-    // (Hs + λ·diag(Hs)) ds = -bs
     const Eigen::Matrix<double, 6, 6> A = Hs + lm_lambda_ * diagHs;
 
-    Eigen::Matrix<double, 6, 1> ds;
-    bool solved = false;
-
-    if constexpr (kLmUseSvdOnly) {
-      // Robust dense solve (Eigen JacobiSVD is appropriate for small 6x6 systems).
-      Eigen::JacobiSVD<Eigen::Matrix<double, 6, 6>> svd(A, Eigen::ComputeFullU | Eigen::ComputeFullV);
-      const auto& sing = svd.singularValues();
-      Eigen::Matrix<double, 6, 6> S_inv = Eigen::Matrix<double, 6, 6>::Zero();
-      const double rel = 1e-12 * std::max(1.0, sing(0));
-      for (int k = 0; k < 6; ++k) {
-        if (sing(k) > rel) {
-          S_inv(k, k) = 1.0 / sing(k);
-        }
-      }
-      ds = svd.matrixV() * S_inv * svd.matrixU().transpose() * (-bs);
-      solved = ds.allFinite();
-    } else {
-      // Fast path solve.
-      Eigen::LDLT<Eigen::Matrix<double, 6, 6>> ldlt(A);
-      if (ldlt.info() == Eigen::Success) {
-        ds = ldlt.solve(-bs);
-        solved = (ldlt.info() == Eigen::Success) && ds.allFinite();
+    Eigen::JacobiSVD<Eigen::Matrix<double, 6, 6>> svd(A, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    const auto& sing = svd.singularValues();
+    Eigen::Matrix<double, 6, 6> S_inv = Eigen::Matrix<double, 6, 6>::Zero();
+    const double rel = 1e-12 * std::max(1.0, sing(0));
+    for (int k = 0; k < 6; ++k) {
+      if (sing(k) > rel) {
+        S_inv(k, k) = 1.0 / sing(k);
       }
     }
+    const Eigen::Matrix<double, 6, 1> ds = svd.matrixV() * S_inv * svd.matrixU().transpose() * (-bs);
 
-    if (!solved) {
-      // Increase λ and retry
+    if (!ds.allFinite()) {
       lm_lambda_ = std::min(kLambdaMax, std::max(2.0 * lm_lambda_, lm_lambda_ * nu));
       nu = std::min(2.0 * nu, 1e6);
       continue;
     }
 
-    // Undo scaling: d = S * ds
     Eigen::Matrix<double, 6, 1> d = S * ds;
 
-    // Trust-region cap (on original variables)
     const double rn = d.head<3>().norm();
     const double tn = d.tail<3>().norm();
     double fac = 1.0;
@@ -493,54 +302,24 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0,
     if (tn > kMaxTransStep) fac = std::min(fac, kMaxTransStep / tn);
     if (fac < 1.0) d *= fac;
 
-    // Build delta in SE(3) and evaluate trial objective.
     delta.setIdentity();
     delta.linear()      = so3_exp(d.head<3>()).toRotationMatrix();
     delta.translation() = d.tail<3>();
 
     const Eigen::Isometry3d xi = delta * x0;
-
-    // First do the cheap frozen-correspondence evaluation.
-    // This uses the correspondence set produced during linearize(x0, ...).
-    const double yi_frozen = compute_error(xi);
-    if (!std::isfinite(yi_frozen)) {
+    const double yi = compute_error_frozen(xi);
+    if (!std::isfinite(yi)) {
       lm_lambda_ = std::min(kLambdaMax, std::max(2.0 * lm_lambda_, lm_lambda_ * nu));
       nu = std::min(2.0 * nu, 1e6);
       continue;
     }
 
-    // Predicted reduction (standard LM): pred = -d^T b - 0.5 d^T H d
     const double Hd = (H * d).dot(d);
     const double pred = -d.dot(b) - 0.5 * Hd;
 
-    double rho_frozen = -1.0;
+    double rho = -1.0;
     if (std::isfinite(pred) && pred > 0.0) {
-      rho_frozen = (y0 - yi_frozen) / pred;
-    }
-
-    // Only if the frozen-correspondence test looks acceptable do we pay for a
-    // fresh-correspondence validation at xi. This avoids making every rejected
-    // LM inner trial expensive.
-    double yi_fresh = yi_frozen;
-    double rho = rho_frozen;
-    bool fresh_check_done = false;
-
-    if (rho_frozen > 0.0 && yi_frozen < y0) {
-      // Re-linearize only to refresh correspondences and obtain the true trial cost.
-      // H/b are not needed here, so pass nullptrs.
-      yi_fresh = linearize(xi, nullptr, nullptr);
-      fresh_check_done = true;
-
-      if (!std::isfinite(yi_fresh)) {
-        lm_lambda_ = std::min(kLambdaMax, std::max(2.0 * lm_lambda_, lm_lambda_ * nu));
-        nu = std::min(2.0 * nu, 1e6);
-        continue;
-      }
-
-      rho = -1.0;
-      if (std::isfinite(pred) && pred > 0.0) {
-        rho = (y0 - yi_fresh) / pred;
-      }
+      rho = (y0 - yi) / pred;
     }
 
     if (lm_debug_print_) {
@@ -549,26 +328,21 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0,
           "--- LM optimization ---\n%5s %15s %15s %15s %15s %15s %5s\n")
           % "i" % "y0" % "yi" % "rho" % "lambda" % "|d|" % "dec";
       }
-      const double yi_print = fresh_check_done ? yi_fresh : yi_frozen;
-      const char dec = (rho > 0.0 && yi_print < y0) ? 'x' : ' ';
+      const char dec = (rho > 0.0 && yi < y0) ? 'x' : ' ';
       std::cout << boost::format("%5d %15g %15g %15g %15g %15g %5c")
-        % i % y0 % yi_print % rho % lm_lambda_ % d.norm() % dec << std::endl;
+        % i % y0 % yi % rho % lm_lambda_ % d.norm() % dec << std::endl;
     }
 
-    if (rho > 0.0 && yi_fresh < y0) {
-      // Accept
+    if (rho > 0.0 && yi < y0) {
       x0 = xi;
-      // Nielsen update
       lm_lambda_ = std::max(kLambdaMin,
                             lm_lambda_ * std::max(1.0 / 3.0, 1.0 - std::pow(2.0 * rho - 1.0, 3)));
       nu = 2.0;
-
       final_hessian_ = H;
-      final_error_   = yi_fresh;
+      final_error_   = yi;
       return true;
     }
 
-    // Reject: increase λ and retry
     lm_lambda_ = std::min(kLambdaMax, lm_lambda_ * nu);
     nu = std::min(2.0 * nu, 1e6);
 
@@ -576,7 +350,7 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0,
       delta.setIdentity();
       final_hessian_ = H;
       final_error_   = y0;
-      return true;
+      return false;
     }
   }
 
@@ -636,12 +410,23 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm_pcg(Eigen::Isometry3d& x
 
   // PCG settings
   constexpr int    kPcgMaxIter = 12;
-  constexpr double kPcgRelTol  = 1e-10;
-  constexpr double kPcgAbsTol  = 1e-14;
+  constexpr double kPcgRelTol  = 1e-4;
+  constexpr double kPcgAbsTol  = 1e-10;
   constexpr double kPrecReg    = 1e-12;
 
   const Eigen::Matrix<double, 6, 6> diagHs = Hs.diagonal().asDiagonal();
   const Eigen::Matrix3d I3 = Eigen::Matrix3d::Identity();
+
+  // Hoist lambda-invariant blocks outside the inner LM loop.
+  // diagHs is diagonal so its off-diagonal 3x3 blocks are zero:
+  //   A.block<3,3>(0,3) = Hs.block<3,3>(0,3)  (lambda-invariant)
+  //   A.block<3,3>(3,0) = Hs.block<3,3>(3,0)  (lambda-invariant)
+  const Eigen::Matrix3d Hs_rr     = Hs.block<3,3>(0,0);
+  const Eigen::Matrix3d Hs_tt     = Hs.block<3,3>(3,3);
+  const Eigen::Matrix3d Hs_rt     = Hs.block<3,3>(0,3);
+  const Eigen::Matrix3d Hs_tr     = Hs.block<3,3>(3,0);
+  const Eigen::Matrix3d diagHs_rr = Hs.diagonal().head<3>().asDiagonal();
+  const Eigen::Matrix3d diagHs_tt = Hs.diagonal().tail<3>().asDiagonal();
 
   auto invert_spd_3x3 = [&](const Eigen::Matrix3d& M) -> Eigen::Matrix3d {
     const Eigen::Matrix3d Msym = 0.5 * (M + M.transpose());
@@ -670,10 +455,9 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm_pcg(Eigen::Isometry3d& x
     // ------------------------------------------------------------------
     // Preconditioner from damped Schur-decoupled blocks
     // ------------------------------------------------------------------
-    const Eigen::Matrix3d Arr = 0.5 * (A.block<3,3>(0,0) + A.block<3,3>(0,0).transpose());
-    const Eigen::Matrix3d Art = A.block<3,3>(0,3);
-    const Eigen::Matrix3d Atr = A.block<3,3>(3,0);
-    const Eigen::Matrix3d Att = 0.5 * (A.block<3,3>(3,3) + A.block<3,3>(3,3).transpose());
+    // Arr/Att vary with lambda; Art/Atr are lambda-invariant (hoisted).
+    const Eigen::Matrix3d Arr = Hs_rr + lm_lambda_ * diagHs_rr;
+    const Eigen::Matrix3d Att = Hs_tt + lm_lambda_ * diagHs_tt;
 
     const Eigen::Matrix3d Arr_reg = Arr + kPrecReg * I3;
     const Eigen::Matrix3d Att_reg = Att + kPrecReg * I3;
@@ -681,8 +465,8 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm_pcg(Eigen::Isometry3d& x
     const Eigen::Matrix3d Arr_reg_inv = invert_spd_3x3(Arr_reg);
     const Eigen::Matrix3d Att_reg_inv = invert_spd_3x3(Att_reg);
 
-    Eigen::Matrix3d Prr = Arr - Art * Att_reg_inv * Atr;
-    Eigen::Matrix3d Ptt = Att - Atr * Arr_reg_inv * Art;
+    Eigen::Matrix3d Prr = Arr - Hs_rt * Att_reg_inv * Hs_tr;
+    Eigen::Matrix3d Ptt = Att - Hs_tr * Arr_reg_inv * Hs_rt;
 
     Prr = 0.5 * (Prr + Prr.transpose()) + kPrecReg * I3;
     Ptt = 0.5 * (Ptt + Ptt.transpose()) + kPrecReg * I3;
@@ -808,9 +592,10 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm_pcg(Eigen::Isometry3d& x
     delta.linear()      = so3_exp(d.head<3>()).toRotationMatrix();
     delta.translation() = d.tail<3>();
 
-    // Evaluate trial objective
+    // Evaluate trial objective using frozen correspondences from linearize(x0).
+    // Avoids a full k-NN pass for every rejected inner LM step.
     const Eigen::Isometry3d xi = delta * x0;
-    const double yi = compute_error(xi);
+    const double yi = compute_error_frozen(xi);
     if (!std::isfinite(yi)) {
       lm_lambda_ = std::min(kLambdaMax, std::max(2.0 * lm_lambda_, lm_lambda_ * nu));
       nu = std::min(2.0 * nu, 1e6);
@@ -863,7 +648,7 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm_pcg(Eigen::Isometry3d& x
       delta.setIdentity();
       final_hessian_ = H;
       final_error_ = y0;
-      return true;
+      return false;
     }
   }
 

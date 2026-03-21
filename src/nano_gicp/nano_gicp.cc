@@ -88,6 +88,7 @@ NanoGICP<PointSource, PointTarget>::NanoGICP() {
   corr_dist_threshold_ = std::numeric_limits<float>::max();
 
   regularization_method_ = RegularizationMethod::PLANE;
+  correspondences_precomputed_ = false;
 }
 
 template <typename PointSource, typename PointTarget>
@@ -124,8 +125,14 @@ bool NanoGICP<PointSource, PointTarget>::computeInitialHessianAtGuess(
     }
   }
 
-  return LsqRegistration<PointSource, PointTarget>::computeLinearizationAtGuess(
+  const bool ok = LsqRegistration<PointSource, PointTarget>::computeLinearizationAtGuess(
       guess, H, b, error);
+  if (ok) {
+    // correspondences_ and mahalanobis_ are now valid at `guess`.
+    // Signal linearize() to reuse them on the first align() iteration.
+    correspondences_precomputed_ = true;
+  }
+  return ok;
 }
 
 template <typename PointSource, typename PointTarget>
@@ -163,6 +170,7 @@ void NanoGICP<PointSource, PointTarget>::clearSource() {
   correspondences_.clear();
   sq_distances_.clear();
   mahalanobis_.clear();
+  correspondences_precomputed_ = false;
 }
 
 template <typename PointSource, typename PointTarget>
@@ -175,6 +183,7 @@ void NanoGICP<PointSource, PointTarget>::clearTarget() {
   correspondences_.clear();
   sq_distances_.clear();
   mahalanobis_.clear();
+  correspondences_precomputed_ = false;
 }
 
 template <typename PointSource, typename PointTarget>
@@ -206,6 +215,7 @@ void NanoGICP<PointSource, PointTarget>::setInputSource(const PointCloudSourceCo
   source_kdtree_ = source_kdtree;
 
   source_covs_.reset();
+  correspondences_precomputed_ = false;
 }
 
 template <typename PointSource, typename PointTarget>
@@ -220,6 +230,7 @@ void NanoGICP<PointSource, PointTarget>::setInputTarget(const PointCloudTargetCo
   target_kdtree_ = target_kdtree;
 
   target_covs_.reset();
+  correspondences_precomputed_ = false;
 }
 
 template <typename PointSource, typename PointTarget>
@@ -351,7 +362,13 @@ double NanoGICP<PointSource, PointTarget>::linearize(
     const Eigen::Isometry3d& trans,
     Eigen::Matrix<double, 6, 6>* H,
     Eigen::Matrix<double, 6, 1>* b) {
-  update_correspondences(trans);
+  if (correspondences_precomputed_) {
+    // Correspondences were built by computeInitialHessianAtGuess() at the same
+    // pose — skip the redundant k-NN pass and consume the flag.
+    correspondences_precomputed_ = false;
+  } else {
+    update_correspondences(trans);
+  }
 
   // Objective:
   //   sum_i rho( e_i^T M_i e_i )
@@ -463,6 +480,37 @@ double NanoGICP<PointSource, PointTarget>::compute_error(const Eigen::Isometry3d
 }
 
 template <typename PointSource, typename PointTarget>
+double NanoGICP<PointSource, PointTarget>::compute_error_frozen(const Eigen::Isometry3d& trans) {
+  // Evaluate the GICP cost at `trans` using correspondences_ and mahalanobis_
+  // from the most recent linearize() call, without running k-NN search.
+  // Used by step_lm_pcg() inner loop to cheaply evaluate rejected trial steps.
+  double sum_errors = 0.0;
+
+#pragma omp parallel for num_threads(num_threads_) reduction(+ : sum_errors) schedule(guided, 8)
+  for (int i = 0; i < static_cast<int>(input_->size()); i++) {
+    const int target_index = correspondences_[i];
+    if (target_index < 0) {
+      continue;
+    }
+
+    const Eigen::Vector4d mean_A = input_->at(i).getVector4fMap().template cast<double>();
+    const Eigen::Vector4d mean_B = target_->at(target_index).getVector4fMap().template cast<double>();
+
+    const Eigen::Vector4d transed_mean_A = trans * mean_A;
+    const Eigen::Vector4d error = mean_B - transed_mean_A;
+
+    const double s_raw = error.transpose() * mahalanobis_[i] * error;
+    if (!std::isfinite(s_raw)) {
+      continue;
+    }
+
+    sum_errors += robust_rho_cauchy(std::max(0.0, s_raw));
+  }
+
+  return sum_errors;
+}
+
+template <typename PointSource, typename PointTarget>
 template <typename PointT>
 bool NanoGICP<PointSource, PointTarget>::calculate_covariances(
   const typename pcl::PointCloud<PointT>::ConstPtr& cloud,
@@ -487,10 +535,11 @@ bool NanoGICP<PointSource, PointTarget>::calculate_covariances(
   float sum_k_sq_distances = 0.0f;
   int density_samples = 0;
 
-#pragma omp parallel for num_threads(num_threads_) schedule(guided, 8) reduction(+:sum_k_sq_distances, density_samples)
+  std::vector<int> k_indices(requested_k);
+  std::vector<float> k_sq_distances(requested_k);
+
+#pragma omp parallel for num_threads(num_threads_) schedule(guided, 8) reduction(+:sum_k_sq_distances, density_samples) firstprivate(k_indices, k_sq_distances)
   for (int i = 0; i < static_cast<int>(cloud->size()); i++) {
-    std::vector<int> k_indices;
-    std::vector<float> k_sq_distances;
     const int num_found = kdtree.nearestKSearch(cloud->at(i), requested_k, k_indices, k_sq_distances);
 
     covariances[i].setZero();
@@ -503,7 +552,7 @@ bool NanoGICP<PointSource, PointTarget>::calculate_covariances(
     }
 
     if (num_found > 1) {
-      const int normalization = ((num_found - 1) * (2 + num_found)) / 2;
+      const int normalization = ((num_found - 1) * num_found) / 2;
       if (normalization > 0) {
         sum_k_sq_distances +=
           std::accumulate(k_sq_distances.begin() + 1, k_sq_distances.begin() + num_found, 0.0f)
