@@ -329,6 +329,17 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
   std::mutex mtx_imu;
   std::condition_variable cv_imu_stamp;
 
+  // Resettable IMU calibration accumulation state.
+  int imu_calib_samples_ = 0;
+  Eigen::Vector3f imu_calib_gyro_sum_ = Eigen::Vector3f::Zero();
+  Eigen::Vector3f imu_calib_accel_sum_ = Eigen::Vector3f::Zero();
+  bool imu_calib_printed_ = false;
+
+  // Resettable IMU frame-transform history.
+  double imu_transform_prev_stamp_ = 0.0;
+  bool imu_transform_prev_valid_ = false;
+  Eigen::Vector3f imu_transform_ang_vel_prev_ = Eigen::Vector3f::Zero();
+
   static bool comparatorImu(ImuMeas m1, ImuMeas m2) {
     return (m1.stamp < m2.stamp);
   };
@@ -381,6 +392,11 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
     std::vector<float> motion_deviation;
   }; Metrics metrics;
 
+  bool spaciousness_lpf_initialized_ = false;
+  float spaciousness_lpf_prev_ = 0.0f;
+  bool density_lpf_initialized_ = false;
+  float density_lpf_prev_ = 0.0f;
+
   struct DegeneracyInfo {
     bool valid = false;
     Eigen::Vector3d eigvals_trans_dec = Eigen::Vector3d::Zero();
@@ -407,6 +423,10 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
   bool time_offset_;
 
   bool adaptive_params_;
+  float adaptive_sp_min_;
+  float adaptive_sp_max_;
+  float adaptive_den_factor_min_;
+  float adaptive_den_factor_max_;
 
   double obs_submap_thresh_;
   double obs_keyframe_thresh_;
@@ -469,7 +489,7 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
 
   // Translation-only degeneracy analysis and visualization.
   // Kept for parameter compatibility; currently ignored in analysis.
-  bool   degen_hessian_in_base_frame_ = true;
+  bool   use_degeneracy_ = false;
   double degen_trans_eig_abs_thresh_ = 1e-4;
 
   bool   viz_degen_marker_ = true;

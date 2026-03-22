@@ -570,6 +570,10 @@ void dlio::OdomNode::getParams() {
 
   // Adaptive Parameters
   dlio::declare_param(this, "adaptive", this->adaptive_params_, true);
+  dlio::declare_param(this, "adaptive/spaciousness/min",    this->adaptive_sp_min_,          0.5f);
+  dlio::declare_param(this, "adaptive/spaciousness/max",    this->adaptive_sp_max_,          5.0f);
+  dlio::declare_param(this, "adaptive/density/factor_min",  this->adaptive_den_factor_min_,  0.5f);
+  dlio::declare_param(this, "adaptive/density/factor_max",  this->adaptive_den_factor_max_,  2.0f);
 
   // Extrinsics
   std::vector<double> t_default{0., 0., 0.};
@@ -675,8 +679,8 @@ void dlio::OdomNode::getParams() {
 
   // Translation-only degeneracy analysis:
   // Weak directions are flagged by absolute eigenvalue thresholds on H_tt.
-  dlio::declare_param(this, "odom/gicp/degeneracy/hessian_in_base_frame",
-                      this->degen_hessian_in_base_frame_, false);
+  dlio::declare_param(this, "odom/gicp/degeneracy/enabled",
+                      this->use_degeneracy_, true);
   dlio::declare_param(this, "odom/gicp/degeneracy/trans_eig_abs_threshold",
                       this->degen_trans_eig_abs_thresh_, 200.0);
 
@@ -1618,48 +1622,44 @@ void dlio::OdomNode::callbackImu(const sensor_msgs::msg::Imu::SharedPtr imu_raw)
   // IMU calibration procedure - do for three seconds
   if (!this->imu_calibrated) {
 
-    static int num_samples = 0;
-    static Eigen::Vector3f gyro_avg (0., 0., 0.);
-    static Eigen::Vector3f accel_avg (0., 0., 0.);
-    static bool print = true;
-
     if ((imu_stamp_secs - this->first_imu_stamp) < this->imu_calib_time_) {
 
-      num_samples++;
+      this->imu_calib_samples_++;
 
-      gyro_avg[0] += ang_vel[0];
-      gyro_avg[1] += ang_vel[1];
-      gyro_avg[2] += ang_vel[2];
+      this->imu_calib_gyro_sum_[0] += ang_vel[0];
+      this->imu_calib_gyro_sum_[1] += ang_vel[1];
+      this->imu_calib_gyro_sum_[2] += ang_vel[2];
 
-      accel_avg[0] += lin_accel[0];
-      accel_avg[1] += lin_accel[1];
-      accel_avg[2] += lin_accel[2];
+      this->imu_calib_accel_sum_[0] += lin_accel[0];
+      this->imu_calib_accel_sum_[1] += lin_accel[1];
+      this->imu_calib_accel_sum_[2] += lin_accel[2];
 
-      if(print) {
+      if (!this->imu_calib_printed_) {
         std::cout << std::endl << " Calibrating IMU for " << this->imu_calib_time_ << " seconds... ";
         std::cout.flush();
-        print = false;
+        this->imu_calib_printed_ = true;
       }
 
     } else {
 
       std::cout << "done" << std::endl << std::endl;
 
-      gyro_avg /= num_samples;
-      accel_avg /= num_samples;
+      const float sample_count = static_cast<float>(std::max(this->imu_calib_samples_, 1));
+      const Eigen::Vector3f gyro_avg = this->imu_calib_gyro_sum_ / sample_count;
+      const Eigen::Vector3f accel_avg = this->imu_calib_accel_sum_ / sample_count;
 
       Eigen::Vector3f grav_vec (0., 0., this->gravity_);
 
       if (this->gravity_align_) {
+        Eigen::Vector3f accel_bias;
+        {
+          std::lock_guard<std::mutex> lock(this->geo.mtx);
+          accel_bias = this->state.b.accel;
+        }
 
         // Estimate gravity vector - Only approximate if biases have not been pre-calibrated
-        grav_vec = (accel_avg - this->state.b.accel).normalized() * abs(this->gravity_);
+        grav_vec = (accel_avg - accel_bias).normalized() * abs(this->gravity_);
         Eigen::Quaternionf grav_q = Eigen::Quaternionf::FromTwoVectors(grav_vec, Eigen::Vector3f(0., 0., this->gravity_));
-
-        // set gravity aligned orientation
-        this->state.q = grav_q;
-        this->T.block(0,0,3,3) = this->state.q.toRotationMatrix();
-        this->lidarPose.q = this->state.q;
 
         // rpy
         auto euler = grav_q.toRotationMatrix().eulerAngles(2, 1, 0);
@@ -1678,27 +1678,44 @@ void dlio::OdomNode::callbackImu(const sensor_msgs::msg::Imu::SharedPtr imu_raw)
         std::cout << "   Pitch [deg]: " << to_string_with_precision(pitch, 4) << std::endl;
         std::cout << "   Yaw   [deg]: " << to_string_with_precision(yaw, 4) << std::endl;
         std::cout << std::endl;
+
+        {
+          std::lock_guard<std::mutex> lock(this->geo.mtx);
+          // set gravity aligned orientation
+          this->state.q = grav_q;
+          this->T.block(0,0,3,3) = this->state.q.toRotationMatrix();
+          this->lidarPose.q = this->state.q;
+        }
       }
 
       if (this->calibrate_accel_) {
+        Eigen::Vector3f accel_bias = accel_avg - grav_vec;
+        {
+          std::lock_guard<std::mutex> lock(this->geo.mtx);
+          this->state.b.accel = accel_bias;
+        }
 
         // subtract gravity from avg accel to get bias
-        this->state.b.accel = accel_avg - grav_vec;
-
-        std::cout << " Accel biases [xyz]: " << to_string_with_precision(this->state.b.accel[0], 8) << ", "
-                                             << to_string_with_precision(this->state.b.accel[1], 8) << ", "
-                                             << to_string_with_precision(this->state.b.accel[2], 8) << std::endl;
+        std::cout << " Accel biases [xyz]: " << to_string_with_precision(accel_bias[0], 8) << ", "
+                                             << to_string_with_precision(accel_bias[1], 8) << ", "
+                                             << to_string_with_precision(accel_bias[2], 8) << std::endl;
       }
 
       if (this->calibrate_gyro_) {
+        {
+          std::lock_guard<std::mutex> lock(this->geo.mtx);
+          this->state.b.gyro = gyro_avg;
+        }
 
-        this->state.b.gyro = gyro_avg;
-
-        std::cout << " Gyro biases  [xyz]: " << to_string_with_precision(this->state.b.gyro[0], 8) << ", "
-                                             << to_string_with_precision(this->state.b.gyro[1], 8) << ", "
-                                             << to_string_with_precision(this->state.b.gyro[2], 8) << std::endl;
+        std::cout << " Gyro biases  [xyz]: " << to_string_with_precision(gyro_avg[0], 8) << ", "
+                                             << to_string_with_precision(gyro_avg[1], 8) << ", "
+                                             << to_string_with_precision(gyro_avg[2], 8) << std::endl;
       }
 
+      this->imu_calib_samples_ = 0;
+      this->imu_calib_gyro_sum_.setZero();
+      this->imu_calib_accel_sum_.setZero();
+      this->imu_calib_printed_ = false;
       this->imu_calibrated = true;
       this->prev_imu_stamp = rclcpp::Time(imu->header.stamp).seconds();
 
@@ -1715,8 +1732,16 @@ void dlio::OdomNode::callbackImu(const sensor_msgs::msg::Imu::SharedPtr imu_raw)
     this->imu_meas.dt = dt;
     this->prev_imu_stamp = this->imu_meas.stamp;
 
-    Eigen::Vector3f lin_accel_corrected = (this->imu_accel_sm_ * lin_accel) - this->state.b.accel;
-    Eigen::Vector3f ang_vel_corrected = ang_vel - this->state.b.gyro;
+    Eigen::Vector3f accel_bias = Eigen::Vector3f::Zero();
+    Eigen::Vector3f gyro_bias = Eigen::Vector3f::Zero();
+    {
+      std::lock_guard<std::mutex> lock(this->geo.mtx);
+      accel_bias = this->state.b.accel;
+      gyro_bias = this->state.b.gyro;
+    }
+
+    Eigen::Vector3f lin_accel_corrected = (this->imu_accel_sm_ * lin_accel) - accel_bias;
+    Eigen::Vector3f ang_vel_corrected = ang_vel - gyro_bias;
 
     this->imu_meas.lin_accel = lin_accel_corrected;
     this->imu_meas.ang_vel = ang_vel_corrected;
@@ -1940,13 +1965,6 @@ void dlio::OdomNode::analyzeDegeneracyFromMatrix(
 
   this->degen_info_.p_map_base = T_map_base.block<3,1>(0,3).cast<double>();
 
-  if (this->degen_hessian_in_base_frame_) {
-    RCLCPP_WARN_ONCE(
-        this->get_logger(),
-        "odom/gicp/degeneracy/hessian_in_base_frame is ignored here. "
-        "Current Hessian is treated as expressed in the registration/world frame.");
-  }
-
   constexpr double eps = 1e-12;
   const Eigen::Matrix3d H_tt =
       0.5 * (H_raw.block<3,3>(3,3) + H_raw.block<3,3>(3,3).transpose());
@@ -1996,14 +2014,6 @@ void dlio::OdomNode::analyzeDegeneracyFromHessian(
 
   // Marker origin should be base pose in map.
   this->degen_info_.p_map_base = T_map_reg.block<3,1>(0,3).cast<double>();
-
-  if (this->degen_hessian_in_base_frame_) {
-    RCLCPP_WARN_ONCE(
-        this->get_logger(),
-        "odom/gicp/degeneracy/hessian_in_base_frame is ignored here. "
-        "Current NanoGICP final Hessian is treated as already expressed in the "
-        "registration/world frame.");
-  }
 
   constexpr double eps = 1e-12;
   const Eigen::Matrix3d H_tt =
@@ -2358,71 +2368,33 @@ void dlio::OdomNode::getNextPose() {
     this->submap_hasChanged = false;
   }
 
-  // Construct and analyze the pre-optimization Hessian at the initial correction guess.
-  // The current scan has already been transformed into the map with T_prior, so the
-  // optimizer's initial correction guess is identity.
   const Eigen::Matrix4f T_corr_guess = Eigen::Matrix4f::Identity();
-  Eigen::Matrix<double, 6, 6> H0;
-  Eigen::Matrix<double, 6, 1> b0;
-  double y0 = 0.0;
 
-  const bool have_pre_hessian =
-      this->gicp.computeInitialHessianAtGuess(T_corr_guess, H0, b0, y0);
+  if (this->use_degeneracy_) {
+    // Detection and visualization only — does not affect registration or state estimation.
+    Eigen::Matrix<double, 6, 6> H0;
+    Eigen::Matrix<double, 6, 1> b0;
+    double y0 = 0.0;
 
-  bool degeneracy_detected = false;
+    const bool have_pre_hessian =
+        this->gicp.computeInitialHessianAtGuess(T_corr_guess, H0, b0, y0);
 
-  if (have_pre_hessian) {
-    // Degeneracy eigendirections are computed from the initial registration Hessian.
-    // Use the prior pose because this Hessian is built before optimization, at the
-    // identity correction on top of the already prior-transformed source cloud.
-    this->analyzeDegeneracyFromMatrix(H0, this->T_prior);
-
-    // Print the translation eigensystem for every scan.
-    // if (this->degen_info_.valid) {
-    //   logTranslationSpectrumAlways(
-    //       this->get_logger(),
-    //       this->degen_info_.eigvals_trans_dec,
-    //       this->degen_info_.eigvecs_trans_map);
-    // }
-
-    degeneracy_detected =
-        this->degen_info_.valid && hasWeakDirection(this->degen_info_.weak_trans);
-
-    // if (degeneracy_detected) {
-    //   logTranslationDegeneracy(
-    //       this->get_logger(),
-    //       this->degen_info_.eigvals_trans_dec,
-    //       this->degen_info_.eigvecs_trans_map,
-    //       this->degen_info_.weak_trans);
-    // }
-
-    this->publishDegeneracyMarkers(this->scan_header_stamp);
-  } else {
-    this->degen_info_.valid = false;
-    this->publishDegeneracyMarkers(this->scan_header_stamp);
+    if (have_pre_hessian) {
+      this->analyzeDegeneracyFromMatrix(H0, this->T_prior);
+      this->publishDegeneracyMarkers(this->scan_header_stamp);
+    } else {
+      this->degen_info_.valid = false;
+      this->publishDegeneracyMarkers(this->scan_header_stamp);
+    }
   }
 
-  if (degeneracy_detected) {
-    // Skip scan-to-submap registration when degeneracy is detected before optimization.
-    // Keep the IMU prior as the global pose update.
-    this->gicp_hasConverged = false;
-    this->T_corr = Eigen::Matrix4f::Identity(); // no registration correction
-    this->T = this->T_prior;
-  } else {
-    // Run scan-to-submap registration with the initial correction guess.
-    // Call chain:
-    //   gicp.align()
-    //     -> NanoGICP::computeTransformation()
-    //     -> LsqRegistration::computeTransformation()
-    //     -> step_optimize() (LM by default)
-    pcl::PointCloud<PointType>::Ptr aligned = std::make_shared<pcl::PointCloud<PointType>>();
-    this->gicp.align(*aligned, T_corr_guess);
+  // Run scan-to-submap registration unconditionally.
+  pcl::PointCloud<PointType>::Ptr aligned = std::make_shared<pcl::PointCloud<PointType>>();
+  this->gicp.align(*aligned, T_corr_guess);
 
-    // Correction from registration (source -> target, both already in world frame).
-    this->T_corr = this->gicp.getFinalTransformation(); // "correction" transformation
-    this->T = this->T_corr * this->T_prior;
-    this->gicp_hasConverged = this->gicp.hasConverged();
-  }
+  this->T_corr = this->gicp.getFinalTransformation();
+  this->T = this->T_corr * this->T_prior;
+  this->gicp_hasConverged = this->gicp.hasConverged();
 
   // this->computeMotionDeviation();
 
@@ -2430,18 +2402,8 @@ void dlio::OdomNode::getNextPose() {
   // Both source and target clouds are in the global frame now, so transformation is global
   this->propagateGICP();
 
-  if (!degeneracy_detected) {
-    // Geometric observer update using accepted LiDAR registration result
-    this->updateState();
-  } else {
-    // No LiDAR update was accepted on this scan.
-    // Keep the IMU-propagated observer state unchanged, but refresh bookkeeping
-    // used by the next IMU-prior construction.
-    std::lock_guard<std::mutex> lock(this->geo.mtx);
-    this->geo.prev_p = this->state.p;
-    this->geo.prev_q = this->state.q;
-    this->geo.prev_vel = this->state.v.lin.w;
-  }
+  // Geometric observer update using LiDAR registration result
+  this->updateState();
 }
 
 bool dlio::OdomNode::imuMeasFromTimeRange(double start_time, double end_time,
@@ -2793,9 +2755,10 @@ sensor_msgs::msg::Imu::SharedPtr dlio::OdomNode::transformImu(const sensor_msgs:
   imu->header = imu_raw->header;
 
   double imu_stamp_secs = rclcpp::Time(imu->header.stamp).seconds();
-  static double prev_stamp = imu_stamp_secs;
-  double dt = imu_stamp_secs - prev_stamp;
-  prev_stamp = imu_stamp_secs;
+  const bool have_prev_transform = this->imu_transform_prev_valid_;
+  double dt = have_prev_transform ? (imu_stamp_secs - this->imu_transform_prev_stamp_) : (1.0 / 400.0);
+  this->imu_transform_prev_stamp_ = imu_stamp_secs;
+  this->imu_transform_prev_valid_ = true;
   
   if (dt <= 0) { dt = 1.0/400.0; }
 
@@ -2810,7 +2773,7 @@ sensor_msgs::msg::Imu::SharedPtr dlio::OdomNode::transformImu(const sensor_msgs:
   imu->angular_velocity.y = ang_vel_cg[1];
   imu->angular_velocity.z = ang_vel_cg[2];
 
-  static Eigen::Vector3f ang_vel_cg_prev = ang_vel_cg;
+  const Eigen::Vector3f ang_vel_cg_prev = have_prev_transform ? this->imu_transform_ang_vel_prev_ : ang_vel_cg;
 
   // Transform linear acceleration (need to account for component due to translational difference)
   Eigen::Vector3f lin_accel(imu_raw->linear_acceleration.x,
@@ -2823,7 +2786,7 @@ sensor_msgs::msg::Imu::SharedPtr dlio::OdomNode::transformImu(const sensor_msgs:
                  + ((ang_vel_cg - ang_vel_cg_prev) / dt).cross(-this->extrinsics.baselink2imu.t)
                  + ang_vel_cg.cross(ang_vel_cg.cross(-this->extrinsics.baselink2imu.t));
 
-  ang_vel_cg_prev = ang_vel_cg;
+  this->imu_transform_ang_vel_prev_ = ang_vel_cg;
 
   imu->linear_acceleration.x = lin_accel_cg[0];
   imu->linear_acceleration.y = lin_accel_cg[1];
@@ -2861,9 +2824,12 @@ void dlio::OdomNode::computeSpaciousness() {
   // median
   std::nth_element(ds.begin(), ds.begin() + ds.size()/2, ds.end());
   float median_curr = ds[ds.size()/2];
-  static float median_prev = median_curr;
-  float median_lpf = 0.95*median_prev + 0.05*median_curr;
-  median_prev = median_lpf;
+  if (!this->spaciousness_lpf_initialized_) {
+    this->spaciousness_lpf_prev_ = median_curr;
+    this->spaciousness_lpf_initialized_ = true;
+  }
+  float median_lpf = 0.95f * this->spaciousness_lpf_prev_ + 0.05f * median_curr;
+  this->spaciousness_lpf_prev_ = median_lpf;
 
   std::lock_guard<std::mutex> lock(g_metrics_mutex);
 
@@ -2892,9 +2858,12 @@ void dlio::OdomNode::computeDensity() {
     density = this->gicp.source_density_;
   }
 
-  static float density_prev = density;
-  float density_lpf = 0.95*density_prev + 0.05*density;
-  density_prev = density_lpf;
+  if (!this->density_lpf_initialized_) {
+    this->density_lpf_prev_ = density;
+    this->density_lpf_initialized_ = true;
+  }
+  float density_lpf = 0.95f * this->density_lpf_prev_ + 0.05f * density;
+  this->density_lpf_prev_ = density_lpf;
 
   std::lock_guard<std::mutex> lock(g_metrics_mutex);
   this->metrics.density.push_back( density_lpf );
@@ -3081,19 +3050,19 @@ void dlio::OdomNode::setAdaptiveParams() {
   // Spaciousness
   float sp = this->metrics.spaciousness.back();
 
-  if (sp < 0.5) { sp = 0.5; }
-  if (sp > 5.0) { sp = 5.0; }
+  if (sp < this->adaptive_sp_min_) { sp = this->adaptive_sp_min_; }
+  if (sp > this->adaptive_sp_max_) { sp = this->adaptive_sp_max_; }
 
   this->keyframe_thresh_dist_ = sp;
 
   // Density
   float den = this->metrics.density.back();
 
-  if (den < 0.5*this->gicp_max_corr_dist_) { den = 0.5*this->gicp_max_corr_dist_; }
-  if (den > 2.0*this->gicp_max_corr_dist_) { den = 2.0*this->gicp_max_corr_dist_; }
+  if (den < this->adaptive_den_factor_min_ * this->gicp_max_corr_dist_) { den = this->adaptive_den_factor_min_ * this->gicp_max_corr_dist_; }
+  if (den > this->adaptive_den_factor_max_ * this->gicp_max_corr_dist_) { den = this->adaptive_den_factor_max_ * this->gicp_max_corr_dist_; }
 
-  if (sp < 5.0) { den = 0.5*this->gicp_max_corr_dist_; };
-  if (sp > 5.0) { den = 2.0*this->gicp_max_corr_dist_; };
+  if (sp < this->adaptive_sp_max_) { den = this->adaptive_den_factor_min_ * this->gicp_max_corr_dist_; };
+  if (sp > this->adaptive_sp_max_) { den = this->adaptive_den_factor_max_ * this->gicp_max_corr_dist_; };
 
   this->gicp.setMaxCorrespondenceDistance(den);
 
