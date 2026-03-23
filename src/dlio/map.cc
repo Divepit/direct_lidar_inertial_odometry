@@ -91,6 +91,22 @@ dlio::MapNode::MapNode() : Node("dlio_map_node") {
     this->dlio_map = std::make_shared<pcl::PointCloud<PointType>>();
   }
 
+  // SavePCD service
+  save_pcd_cb_group = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  save_pcd_srv = this->create_service<direct_lidar_inertial_odometry::srv::SavePCD>(
+      "save_pcd",
+      std::bind(&dlio::MapNode::savePCD, this, std::placeholders::_1, std::placeholders::_2),
+      rclcpp::ServicesQoS(),
+      save_pcd_cb_group);
+
+  // ResetMap service
+  reset_map_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  reset_map_srv_ = this->create_service<std_srvs::srv::Trigger>(
+      "reset_map",
+      std::bind(&dlio::MapNode::resetMap, this, std::placeholders::_1, std::placeholders::_2),
+      rclcpp::ServicesQoS(),
+      reset_map_cb_group_);
+
   pcl::console::setVerbosityLevel(pcl::console::L_ERROR);
 }
 
@@ -129,18 +145,30 @@ void dlio::MapNode::callbackKeyframe(const sensor_msgs::msg::PointCloud2::ConstS
   pcl::fromROSMsg(*keyframe, *keyframe_pcl);
 
   // Voxel filter (kept as member for minimal changes; safe with default mutually-exclusive callback group)
-  this->voxelgrid.setLeafSize(this->leaf_size_, this->leaf_size_, this->leaf_size_);
+  const float leaf_size = static_cast<float>(this->leaf_size_);
+  this->voxelgrid.setLeafSize(leaf_size, leaf_size, leaf_size);
   this->voxelgrid.setInputCloud(keyframe_pcl);
   this->voxelgrid.filter(*keyframe_pcl);
 
-  // Accumulate into map
+  // Accumulate into map — epoch check is inside the lock so it is coherent with
+  // the write in resetMap() which holds the same lock.
   {
     std::lock_guard<std::mutex> lk(map_mtx_);
+    if (rclcpp::Time(keyframe->header.stamp) < reset_epoch_stamp_) {
+      RCLCPP_DEBUG(this->get_logger(),
+                   "[MAP] Discarding stale pre-reset keyframe (stamp %.3f < epoch %.3f).",
+                   rclcpp::Time(keyframe->header.stamp).seconds(),
+                   reset_epoch_stamp_.seconds());
+      return;
+    }
     *this->dlio_map += *keyframe_pcl;
   }
 
   // Publish (original organized check kept)
-  if (this->dlio_map->points.size() == this->dlio_map->width * this->dlio_map->height) {
+  const auto organized_point_count =
+      static_cast<decltype(this->dlio_map->points.size())>(this->dlio_map->width) *
+      static_cast<decltype(this->dlio_map->points.size())>(this->dlio_map->height);
+  if (this->dlio_map->points.size() == organized_point_count) {
     if (this->map_pub->get_subscription_count() > 0) {
       // Snapshot pose flags and map ptr
       Eigen::Vector3f pose;
@@ -213,32 +241,66 @@ void dlio::MapNode::doPeriodicCrop() {
   // new_map (old map) released here when no other refs exist.
 }
 
-void dlio::MapNode::savePCD(std::shared_ptr<direct_lidar_inertial_odometry::srv::SavePCD::Request> req,
-                            std::shared_ptr<direct_lidar_inertial_odometry::srv::SavePCD::Response> res) {
-  pcl::PointCloud<PointType>::Ptr m(new pcl::PointCloud<PointType>());
+void dlio::MapNode::resetMap(std::shared_ptr<std_srvs::srv::Trigger::Request> /*unused*/,  // NOLINT(performance-unnecessary-value-param)
+                             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {  // NOLINT(performance-unnecessary-value-param)
+  // Acquire both mutexes together (always map → pose order to prevent deadlock)
+  std::scoped_lock map_pose_lock(map_mtx_, pose_mtx_);
+
+  // Clear the accumulated map
+  dlio_map = std::make_shared<pcl::PointCloud<PointType>>();
+
+  // Reset pose tracking
+  have_pose_ = false;
+  robot_xyz_ = Eigen::Vector3f::Zero();
+
+  // Reset the crop timer so it doesn't fire against an empty map with stale state
+  if (crop_timer_) {
+    crop_timer_->cancel();
+    crop_timer_.reset();
+  }
+  if (crop_enabled_ && crop_period_sec_ > 0.0) {
+    auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(crop_period_sec_));
+    crop_timer_ = this->create_wall_timer(
+        period, [this] { this->doPeriodicCrop(); });
+  }
+
+  // Record epoch so stale in-flight keyframes are discarded in callbackKeyframe.
+  reset_epoch_stamp_ = this->now();
+
+  RCLCPP_INFO(this->get_logger(),
+              "\033[32m[MAP RESET] Map cleared, pose reset. Epoch stamp set to %.3f s.\033[0m",
+              reset_epoch_stamp_.seconds());
+  res->success = true;
+  res->message = "Map reset successfully.";
+}
+
+void dlio::MapNode::savePCD(std::shared_ptr<direct_lidar_inertial_odometry::srv::SavePCD::Request> req,  // NOLINT(performance-unnecessary-value-param)
+                            std::shared_ptr<direct_lidar_inertial_odometry::srv::SavePCD::Response> res) {  // NOLINT(performance-unnecessary-value-param)
+  pcl::PointCloud<PointType>::Ptr map_cloud(new pcl::PointCloud<PointType>());
   {
-    std::lock_guard<std::mutex> lk(map_mtx_);
-    *m = *this->dlio_map;  // copy under lock
+    std::lock_guard<std::mutex> map_lock(map_mtx_);
+    *map_cloud = *this->dlio_map;  // copy under lock
   }
 
   float leaf_size = req->leaf_size;
-  std::string p = req->save_path;
+  std::string save_path = req->save_path;
 
-  std::cout << std::setprecision(2) << "Saving map to " << p + "/dlio_map.pcd"
+  std::cout << std::setprecision(2) << "Saving map to " << save_path + "/dlio_map.pcd"
             << " with leaf size " << to_string_with_precision(leaf_size, 2) << "... ";
   std::cout.flush();
 
-  pcl::VoxelGrid<PointType> vg;
-  vg.setLeafSize(leaf_size, leaf_size, leaf_size);
-  vg.setInputCloud(m);
-  vg.filter(*m);
+  pcl::VoxelGrid<PointType> voxel_grid;
+  voxel_grid.setLeafSize(leaf_size, leaf_size, leaf_size);
+  voxel_grid.setInputCloud(map_cloud);
+  voxel_grid.filter(*map_cloud);
 
-  int ret = pcl::io::savePCDFileBinary(p + "/dlio_map.pcd", *m);
+  int ret = pcl::io::savePCDFileBinary(save_path + "/dlio_map.pcd", *map_cloud);
   res->success = (ret == 0);
 
   if (res->success) {
-    std::cout << "done" << std::endl;
+    std::cout << "done\n";
   } else {
-    std::cout << "failed" << std::endl;
+    std::cout << "failed\n";
   }
 }

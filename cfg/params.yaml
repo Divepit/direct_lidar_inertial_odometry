@@ -56,10 +56,14 @@
 
     odom/gicp/initLambdaFactor: 1e-6
     odom/gicp/degeneracy/enabled: true
-    odom/gicp/degeneracy/trans_eig_abs_threshold: 5000.0
+    odom/gicp/degeneracy/trans_eig_abs_threshold: 50.0
+    odom/gicp/degeneracy/reset_consecutive_count: 10
 
-    # Aggressive (wn=3.0, zeta=0.85, critically matched): Kp=5.1, Kv=9.0, Kq=12.0, Kab=3.0, Kgb=1.5
-    odom/geo/Kp: 4.5
+    odom/restart/geometry_gate/enabled: true
+    odom/restart/geometry_gate/min_eigenvalue: 100.0
+
+    # Aggressive (wn=3.0, zeta=0.85): Kp=5.1, Kv=9.0, Kq=12.0, Kab=3.0, Kgb=1.5
+    odom/geo/Kp: 5.1
     odom/geo/Kv: 11.25
     odom/geo/Kq: 4.0
     odom/geo/Kab: 2.25

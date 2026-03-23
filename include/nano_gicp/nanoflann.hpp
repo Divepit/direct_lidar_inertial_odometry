@@ -826,6 +826,7 @@ struct metric_SO3 : public Metric
 /** @addtogroup param_grp Parameter structs
  * @{ */
 
+// NOLINTNEXTLINE
 enum class KDTreeSingleIndexAdaptorFlags
 {
     None                  = 0,
@@ -1158,6 +1159,7 @@ class KDTreeBaseClass
     /**
      * Compute the minimum and maximum element values in the specified dimension
      */
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     void computeMinMax(
         const Derived& obj, Offset ind, Size count, Dimension element, ElementType& min_elem,
         ElementType& max_elem) const
@@ -1446,6 +1448,7 @@ class KDTreeBaseClass
      *  dataset[ind[lim1..lim2-1]][cutfeat] == cutval
      *  dataset[ind[lim2..count]][cutfeat] > cutval
      */
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     void planeSplit(
         const Derived& obj, const Offset ind, const Size count, const Dimension cutfeat,
         const DistanceType& cutval, Offset& lim1, Offset& lim2)
@@ -2643,7 +2646,7 @@ class KDTreeSingleIndexDynamicAdaptor
     void removePoint(size_t idx)
     {
         if (idx >= pointCount_) return;
-        removedPoints_.insert(idx);
+        removedPoints_.insert(static_cast<int>(idx));
         treeIndex_[idx] = -1;
     }
 

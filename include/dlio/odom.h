@@ -25,6 +25,7 @@
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <builtin_interfaces/msg/time.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 
 // BOOST
@@ -44,6 +45,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 
 #include <array>
+#include <condition_variable>
 #include <deque>
 
 class dlio::OdomNode: public rclcpp::Node {
@@ -59,16 +61,27 @@ private:
 
   struct State;
   struct ImuMeas;
+  struct InitialImuBaseline;
 
   void getParams();
 
-  void callbackPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr pc);
+  void callbackPointCloud(sensor_msgs::msg::PointCloud2::SharedPtr pc);  // NOLINT(performance-unnecessary-value-param)
   void processPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& pc);
-  void callbackImu(const sensor_msgs::msg::Imu::SharedPtr imu);
+  void callbackImu(sensor_msgs::msg::Imu::SharedPtr imu);  // NOLINT(performance-unnecessary-value-param)
+  void resetService(std::shared_ptr<std_srvs::srv::Trigger::Request> req,  // NOLINT(performance-unnecessary-value-param)
+                    std::shared_ptr<std_srvs::srv::Trigger::Response> res);  // NOLINT(performance-unnecessary-value-param)
+  void captureInitialImuBaseline(const Eigen::Vector3f& gravity_vec,
+                                 const Eigen::Quaternionf& gravity_align_q,
+                                 const Eigen::Vector3f& accel_bias,
+                                 const Eigen::Vector3f& gyro_bias);
+  bool beginPendingReset();
+  void finishPendingReset(bool success, const std::string& message);
+  void performReset();
+  bool triggerInternalReset(const std::string& reason);
+  void requestMapReset(const std::string& origin);
+  bool scanPassesGeometryGate(const sensor_msgs::msg::PointCloud2::SharedPtr& pc);
 
-  void publishPose();
-
-void publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud,
+void publishToROS(const pcl::PointCloud<PointType>::ConstPtr& published_cloud,
                   const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
                   const Eigen::Ref<const Eigen::Matrix4f>& T_all,
                   double scanStamp,
@@ -77,7 +90,7 @@ void publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud,
                   const Eigen::Vector3f& state_vlin_b_scan,
                   const Eigen::Vector3f& state_vang_b_scan);
 
-void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
+void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
                   const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
                   const Eigen::Ref<const Eigen::Matrix4f>& T_all,
                   const Eigen::Ref<const Eigen::Matrix4f>& T_map_odom,
@@ -94,18 +107,18 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
 
   void initializeDLIO();
 
-  void getNextPose();
+  bool getNextPose();
   bool imuMeasFromTimeRange(double start_time, double end_time,
-                            boost::circular_buffer<ImuMeas>::reverse_iterator& begin_imu_it,
+                            boost::circular_buffer<ImuMeas>::reverse_iterator& begin_imu_it,  // NOLINT(bugprone-easily-swappable-parameters)
                             boost::circular_buffer<ImuMeas>::reverse_iterator& end_imu_it);
   std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>>
     integrateImu(double start_time, Eigen::Quaternionf q_init, Eigen::Vector3f p_init, Eigen::Vector3f v_init,
                  const std::vector<double>& sorted_timestamps);
   std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>>
-    integrateImuInternal(Eigen::Quaternionf q_init, Eigen::Vector3f p_init, Eigen::Vector3f v_init,
+    integrateImuInternal(const Eigen::Quaternionf& q_init, const Eigen::Vector3f& p_init, const Eigen::Vector3f& v_init,
                          const std::vector<double>& sorted_timestamps,
-                         boost::circular_buffer<ImuMeas>::reverse_iterator begin_imu_it,
-                         boost::circular_buffer<ImuMeas>::reverse_iterator end_imu_it);
+                         const boost::circular_buffer<ImuMeas>::reverse_iterator& begin_imu_it,  // NOLINT(bugprone-easily-swappable-parameters)
+                         const boost::circular_buffer<ImuMeas>::reverse_iterator& end_imu_it);
   void propagateGICP();
 
   void propagateState();
@@ -125,24 +138,20 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
   void computeConvexHull();
   void computeConcaveHull();
   void pushSubmapIndices(std::vector<float> dists, int k, std::vector<int> frames);
-  void buildSubmap(State vehicle_state);
-  void buildKeyframesAndSubmap(State vehicle_state);
+  void buildSubmap(const State& vehicle_state);
+  void buildKeyframesAndSubmap(const State& vehicle_state);
   void pauseSubmapBuildIfNeeded();
 
   void publishPoseSnapshot();
   void onKeyframesTrim(std::size_t removed);
   // Velocity markers
   void publishVelocityMarkers(const rclcpp::Time& stamp,
-                              const Eigen::Vector3f& vlin_b,
+                              const Eigen::Vector3f& vlin_b,  // NOLINT(bugprone-easily-swappable-parameters)
                               const Eigen::Vector3f& vang_b);
   void publishCorrectionMarker(const rclcpp::Time& stamp,
                                const Eigen::Ref<const Eigen::Matrix4f>& T_corr,
                                const Eigen::Ref<const Eigen::Matrix4f>& T_all);
-  void analyzeDegeneracyFromHessian(const Eigen::Ref<const Eigen::Matrix4f>& T_map_base);
-
-  void analyzeDegeneracyFromMatrix(
-    const Eigen::Ref<const Eigen::Matrix<double, 6, 6>>& H_in,
-    const Eigen::Ref<const Eigen::Matrix4f>& T_map_base);
+  void analyzeDegeneracyFromCurrentScan(const Eigen::Ref<const Eigen::Matrix4f>& T_map_base);
 
   void publishDegeneracyMarkers(const rclcpp::Time& stamp);
   void createLinVelocityMarker(const std::string& frame_id, const rclcpp::Time& stamp,
@@ -163,7 +172,7 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
   // Subscribers
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr lidar_sub;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
-  rclcpp::CallbackGroup::SharedPtr lidar_cb_group, imu_cb_group;
+  rclcpp::CallbackGroup::SharedPtr lidar_cb_group, imu_cb_group, reset_srv_cb_group_;
 
   // Publishers
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub;
@@ -177,6 +186,8 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_not_transformed_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_map_pub;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_map_pub;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_srv_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr map_reset_client_;
 
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr pub_lin_vel_marker_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr pub_ang_vel_marker_;
@@ -290,6 +301,7 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
   // GICP
   nano_gicp::NanoGICP<PointType, PointType> gicp;
   nano_gicp::NanoGICP<PointType, PointType> gicp_temp;
+  nano_gicp::NanoGICP<PointType, PointType> gicp_self_; // dedicated to restart geometry gate
 
   // Transformations
   Eigen::Matrix4f T, T_prior, T_corr;
@@ -340,7 +352,7 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
   bool imu_transform_prev_valid_ = false;
   Eigen::Vector3f imu_transform_ang_vel_prev_ = Eigen::Vector3f::Zero();
 
-  static bool comparatorImu(ImuMeas m1, ImuMeas m2) {
+  static bool comparatorImu(const ImuMeas& m1, const ImuMeas& m2) {
     return (m1.stamp < m2.stamp);
   };
 
@@ -378,6 +390,15 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
     ImuBias b; // imu biases in body frame
   }; State state;
 
+  struct InitialImuBaseline {
+    bool valid = false;
+    Eigen::Vector3f gravity_vec = Eigen::Vector3f::Zero();
+    float gravity_norm = 0.0f;
+    Eigen::Quaternionf gravity_align_q = Eigen::Quaternionf::Identity();
+    Eigen::Vector3f accel_bias = Eigen::Vector3f::Zero();
+    Eigen::Vector3f gyro_bias = Eigen::Vector3f::Zero();
+  }; InitialImuBaseline initial_imu_baseline_;
+
   struct Pose {
     Eigen::Vector3f p; // position in world frame
     Eigen::Quaternionf q; // orientation in world frame
@@ -399,8 +420,9 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
 
   struct DegeneracyInfo {
     bool valid = false;
+    // Eigenpairs of the raw scan normal-spread matrix. Small eigenvalues
+    // indicate weak translation observability along the corresponding directions.
     Eigen::Vector3d eigvals_trans_dec = Eigen::Vector3d::Zero();
-    // Columns are translation-block eigenvectors in dlio_map.
     Eigen::Matrix3d eigvecs_trans_map = Eigen::Matrix3d::Identity();
     Eigen::Vector3d p_map_base = Eigen::Vector3d::Zero();
     std::array<bool, 3> weak_trans{{false, false, false}};
@@ -487,10 +509,17 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
   double viz_corr_lifetime_ = 0.0;         // [s], 0 keeps full correction history visible
   std::vector<geometry_msgs::msg::Point> corr_marker_points_;
 
-  // Translation-only degeneracy analysis and visualization.
-  // Kept for parameter compatibility; currently ignored in analysis.
+  // Translation-only degeneracy analysis and visualization from the
+  // raw scan normal-spread matrix.
   bool   use_degeneracy_ = false;
-  double degen_trans_eig_abs_thresh_ = 1e-4;
+  double degen_trans_eig_abs_thresh_ = 200.0;
+  int    degen_reset_consecutive_count_ = 5;
+  int    degen_consecutive_hits_ = 0;
+
+  // Restart geometry gate threshold on the weakest axis of the scan's
+  // local-normal scatter matrix.
+  bool   restart_gate_enabled_ = true;
+  double restart_gate_min_eigenvalue_ = 50.0;
 
   bool   viz_degen_marker_ = true;
   double viz_degen_trans_scale_ = 0.75;
@@ -504,15 +533,15 @@ void publishCloud(pcl::PointCloud<PointType>::ConstPtr cloud,
 
 
 struct PubJob {
-  pcl::PointCloud<PointType>::ConstPtr cloud;
   Eigen::Matrix4f T_cloud;
   Eigen::Matrix4f T_all;
-  builtin_interfaces::msg::Time scan_header_stamp;
+  Eigen::Quaternionf state_q_scan;
   double scanStamp;
+  pcl::PointCloud<PointType>::ConstPtr cloud;
+  builtin_interfaces::msg::Time scan_header_stamp;
 
   // Odom-state snapshot at the same scan reference time as T_all/T_cloud
   Eigen::Vector3f state_p_scan;
-  Eigen::Quaternionf state_q_scan;
   Eigen::Vector3f state_vlin_b_scan;
   Eigen::Vector3f state_vang_b_scan;
 };
@@ -533,6 +562,13 @@ struct PubJob {
   std::condition_variable q_cv_;
   std::deque<PubJob> q_;
   std::atomic_bool stop_{false};
+
+  std::mutex reset_mutex_;
+  std::condition_variable reset_done_cv_;
+  bool reset_requested_ = false;
+  std::atomic<bool> reset_in_progress_{false};
+  bool reset_succeeded_ = false;
+  std::string reset_status_message_;
 
   void pointCloudWorkerLoop();
   void enqueuePointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& pc);

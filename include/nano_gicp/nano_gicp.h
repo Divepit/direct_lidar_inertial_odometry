@@ -44,6 +44,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
@@ -58,7 +60,7 @@ namespace nano_gicp {
 
 typedef std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> CovarianceList;
 
-enum class RegularizationMethod { NONE, MIN_EIG, NORMALIZED_MIN_EIG, PLANE, FROBENIUS };
+enum class RegularizationMethod : std::uint8_t { NONE, MIN_EIG, NORMALIZED_MIN_EIG, PLANE, FROBENIUS };
 
 template<typename PointSource, typename PointTarget>
 class NanoGICP : public LsqRegistration<PointSource, PointTarget> {
@@ -160,4 +162,3 @@ protected:
   bool correspondences_precomputed_;
 };
 }  // namespace nano_gicp
-
