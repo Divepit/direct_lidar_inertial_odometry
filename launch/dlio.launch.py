@@ -33,6 +33,7 @@ def generate_launch_description():
             ('pointcloud', pointcloud_topic),
             ('imu', imu_topic),
             ('map_pose', 'dlio/odom_node/map_pose'),
+            ('map_pose_inverted', 'dlio/odom_node/map_pose_inverted'),
             ('odom', 'dlio/odom_node/odom'),
             ('pose', 'dlio/odom_node/pose'),
             ('path_map', 'dlio/odom_node/path_map'),

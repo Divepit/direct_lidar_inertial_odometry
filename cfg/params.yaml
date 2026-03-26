@@ -27,6 +27,8 @@
     map/crop/padding: 2.0        # meters of extra margin to reduce churn
     map/crop/period_sec: 2.0     # crop the stored map every N seconds
 
+    odom/debug/enabled: false
+
     odom/gravity: 9.80665
     odom/computeTimeOffset: false
 

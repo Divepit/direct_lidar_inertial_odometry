@@ -186,6 +186,7 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_not_transformed_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_map_pub;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_map_pub;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_baselink_pub;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_srv_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr map_reset_client_;
 
@@ -226,6 +227,10 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   std::thread publish_keyframe_thread;
   std::thread metrics_thread;
   std::thread debug_thread;
+
+  // Pointcloud rate estimation (used when debug is disabled)
+  std::deque<std::chrono::steady_clock::time_point> pc_rate_window_;
+  std::chrono::steady_clock::time_point pc_rate_last_print_;
 
   // Trajectory
   std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
@@ -408,8 +413,8 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
 
   // Metrics
   struct Metrics {
-    std::vector<float> spaciousness;
-    std::vector<float> density;
+    std::deque<float> spaciousness;
+    std::deque<float> density;
     std::vector<float> motion_deviation;
   }; Metrics metrics;
 
@@ -430,13 +435,15 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   }; DegeneracyInfo degen_info_;
 
   std::string cpu_type;
-  std::vector<double> cpu_percents;
+  std::deque<double> cpu_percents;
   clock_t lastCPU, lastSysCPU, lastUserCPU;
   int numProcessors;
 
   // Parameters
   std::string version_;
   int num_threads_;
+
+  bool debug_enabled_;
 
   bool deskew_;
 

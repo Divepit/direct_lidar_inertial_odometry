@@ -279,15 +279,15 @@ Visualization Manager:
     - Alpha: 0.10000000149011612
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 6.138181209564209
-        Min Value: -0.7789650559425354
+        Max Value: 8.0790433883667
+        Min Value: -4.955229759216309
         Value: true
       Axis: Z
       Channel Name: intensity
       Class: rviz_default_plugins/PointCloud2
       Color: 255; 255; 255
       Color Transformer: AxisColor
-      Decay Time: 500
+      Decay Time: 2
       Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
@@ -537,7 +537,7 @@ Visualization Manager:
         Value: /path_map_prop
       Value: false
     - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
+      Enabled: false
       Name: DegeneracyArrow
       Namespaces:
         {}
@@ -547,7 +547,7 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /dlio/odom_node/markers/degeneracy_directions
-      Value: true
+      Value: false
     - Alpha: 1
       Buffer Length: 1
       Class: rviz_default_plugins/Path

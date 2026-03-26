@@ -182,7 +182,8 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   rclcpp::QoS reliable_qos(rclcpp::KeepLast(10));
   reliable_qos.reliability(RMW_QOS_POLICY_RELIABILITY_RELIABLE);
-  this->odom_map_pub = this->create_publisher<nav_msgs::msg::Odometry>("map_pose", reliable_qos);
+  this->odom_map_pub = this->create_publisher<nav_msgs::msg::Odometry>("map_pose_inverted", reliable_qos);
+  this->odom_baselink_pub = this->create_publisher<nav_msgs::msg::Odometry>("map_pose", reliable_qos);
 
   auto best_effort_qos = rclcpp::QoS(100)
                              .reliability(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT)
@@ -1366,6 +1367,8 @@ void dlio::OdomNode::getParams() {
   dlio::declare_param(this, "odom/geo/gbias_max",       this->geo_gbias_max_,       0.30); // [rad/s]
 
   // Visualization (velocity markers)
+  dlio::declare_param(this, "odom/debug/enabled",            this->debug_enabled_,        false);
+
   dlio::declare_param(this, "viz/vel_marker/enabled",        this->viz_vel_markers_,      true);
   dlio::declare_param(this, "viz/vel_marker/scale_lin",      this->viz_lin_gain_,         0.5);   // arrow length gain
   dlio::declare_param(this, "viz/vel_marker/ang/radius_gain",this->viz_ang_radius_gain_,  0.20);
@@ -1496,36 +1499,62 @@ void dlio::OdomNode::publishToROS(
   const Eigen::Vector3f p_bm = -(q_bm._transformVector(p_mb));
 
   // map_pose: pose of dlio_map in base_link, time-aligned to the scan.
-  nav_msgs::msg::Odometry odom_map;
-  odom_map.header.stamp = scan_stamp_msg;
-  odom_map.header.frame_id = this->baselink_frame;
-  odom_map.child_frame_id = "dlio_map";
-
-  odom_map.pose.pose.position.x = p_bm.x();
-  odom_map.pose.pose.position.y = p_bm.y();
-  odom_map.pose.pose.position.z = p_bm.z();
-  odom_map.pose.pose.orientation.w = q_bm.w();
-  odom_map.pose.pose.orientation.x = q_bm.x();
-  odom_map.pose.pose.orientation.y = q_bm.y();
-  odom_map.pose.pose.orientation.z = q_bm.z();
-
-  // Twist of dlio_map w.r.t. base_link, expressed in child frame (dlio_map).
-  // Keep this derived from the same scan-time odom snapshot used below so the
-  // published pose/twist/cloud/TF are self-consistent.
-  const Eigen::Vector3f v_mb_m = q_mb._transformVector(state_vlin_b_scan);
-  const Eigen::Vector3f w_mb_m = q_mb._transformVector(state_vang_b_scan);
-  const Eigen::Vector3f v_bm_m = -(v_mb_m + p_mb.cross(w_mb_m));
-  const Eigen::Vector3f w_bm_m = -w_mb_m;
-
-  odom_map.twist.twist.linear.x  = v_bm_m.x();
-  odom_map.twist.twist.linear.y  = v_bm_m.y();
-  odom_map.twist.twist.linear.z  = v_bm_m.z();
-  odom_map.twist.twist.angular.x = w_bm_m.x();
-  odom_map.twist.twist.angular.y = w_bm_m.y();
-  odom_map.twist.twist.angular.z = w_bm_m.z();
-
   if (hasSubscribers(this->odom_map_pub)) {
+    nav_msgs::msg::Odometry odom_map;
+    odom_map.header.stamp = scan_stamp_msg;
+    odom_map.header.frame_id = this->baselink_frame;
+    odom_map.child_frame_id = "dlio_map";
+
+    odom_map.pose.pose.position.x = p_bm.x();
+    odom_map.pose.pose.position.y = p_bm.y();
+    odom_map.pose.pose.position.z = p_bm.z();
+    odom_map.pose.pose.orientation.w = q_bm.w();
+    odom_map.pose.pose.orientation.x = q_bm.x();
+    odom_map.pose.pose.orientation.y = q_bm.y();
+    odom_map.pose.pose.orientation.z = q_bm.z();
+
+    // Twist of dlio_map w.r.t. base_link, expressed in child frame (dlio_map).
+    // Keep this derived from the same scan-time odom snapshot used below so the
+    // published pose/twist/cloud/TF are self-consistent.
+    const Eigen::Vector3f v_mb_m = q_mb._transformVector(state_vlin_b_scan);
+    const Eigen::Vector3f w_mb_m = q_mb._transformVector(state_vang_b_scan);
+    const Eigen::Vector3f v_bm_m = -(v_mb_m + p_mb.cross(w_mb_m));
+    const Eigen::Vector3f w_bm_m = -w_mb_m;
+
+    odom_map.twist.twist.linear.x  = v_bm_m.x();
+    odom_map.twist.twist.linear.y  = v_bm_m.y();
+    odom_map.twist.twist.linear.z  = v_bm_m.z();
+    odom_map.twist.twist.angular.x = w_bm_m.x();
+    odom_map.twist.twist.angular.y = w_bm_m.y();
+    odom_map.twist.twist.angular.z = w_bm_m.z();
+
     this->odom_map_pub->publish(odom_map);
+  }
+
+  // base_pose: pose of base_link in dlio_map, time-aligned to the scan.
+  if (hasSubscribers(this->odom_baselink_pub)) {
+    nav_msgs::msg::Odometry odom_baselink;
+    odom_baselink.header.stamp    = scan_stamp_msg;
+    odom_baselink.header.frame_id = "dlio_map";
+    odom_baselink.child_frame_id  = this->baselink_frame;
+
+    odom_baselink.pose.pose.position.x    = p_mb.x();
+    odom_baselink.pose.pose.position.y    = p_mb.y();
+    odom_baselink.pose.pose.position.z    = p_mb.z();
+    odom_baselink.pose.pose.orientation.w = q_mb.w();
+    odom_baselink.pose.pose.orientation.x = q_mb.x();
+    odom_baselink.pose.pose.orientation.y = q_mb.y();
+    odom_baselink.pose.pose.orientation.z = q_mb.z();
+
+    // Twist of base_link w.r.t. dlio_map, expressed in child frame (base_link).
+    odom_baselink.twist.twist.linear.x  = state_vlin_b_scan.x();
+    odom_baselink.twist.twist.linear.y  = state_vlin_b_scan.y();
+    odom_baselink.twist.twist.linear.z  = state_vlin_b_scan.z();
+    odom_baselink.twist.twist.angular.x = state_vang_b_scan.x();
+    odom_baselink.twist.twist.angular.y = state_vang_b_scan.y();
+    odom_baselink.twist.twist.angular.z = state_vang_b_scan.z();
+
+    this->odom_baselink_pub->publish(odom_baselink);
   }
 
   // ---------------------------------------------------------------------------
@@ -1555,7 +1584,10 @@ void dlio::OdomNode::publishToROS(
     this->path_pub->publish(this->path_ros);
   }
 
-  this->publishCorrectionMarker(scan_time, T_cloud, T_all);
+  if (this->viz_corr_marker_ && this->pub_corr_marker_ &&
+      hasSubscribers(this->pub_corr_marker_)) {
+    this->publishCorrectionMarker(scan_time, T_cloud, T_all);
+  }
 
   // ---------------------------------------------------------------------------
   // dlio_odom <-> base_link at the SAME scan-time corrected state snapshot
@@ -2140,6 +2172,30 @@ void dlio::OdomNode::initializeDLIO() {
 void dlio::OdomNode::callbackPointCloud(sensor_msgs::msg::PointCloud2::SharedPtr pc) {
   // Keep callback lightweight to avoid blocking DDS receive threads.
   this->enqueuePointCloud(pc);
+
+  if (!this->debug_enabled_) {
+    constexpr std::size_t kRateWindowSize = 20;
+    this->pc_rate_window_.push_back(std::chrono::steady_clock::now());
+    if (this->pc_rate_window_.size() > kRateWindowSize) {
+      this->pc_rate_window_.pop_front();
+    }
+    if (this->pc_rate_window_.size() >= 2) {
+      const auto now = this->pc_rate_window_.back();
+      const double since_print = std::chrono::duration<double>(
+          now - this->pc_rate_last_print_).count();
+      if (since_print >= 2.0) {
+        const double span = std::chrono::duration<double>(
+            now - this->pc_rate_window_.front()).count();
+        const double rate = static_cast<double>(this->pc_rate_window_.size() - 1) / span;
+        const std::time_t t = std::time(nullptr);
+        std::tm tm{};
+        localtime_r(&t, &tm);
+        printf("\033[32m[%02d:%02d:%02d] [DLIO] Pointcloud rate: %.2f Hz\033[0m\n",
+               tm.tm_hour, tm.tm_min, tm.tm_sec, rate);
+        this->pc_rate_last_print_ = now;
+      }
+    }
+  }
 }
 
 void dlio::OdomNode::processPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& pc) {
@@ -2314,8 +2370,10 @@ void dlio::OdomNode::processPointCloud(const sensor_msgs::msg::PointCloud2::Shar
   // this->gicp_hasConverged = this->gicp.hasConverged();
 
   // Debug statements and publish custom DLIO message
-  this->debug_thread = std::thread(&dlio::OdomNode::debug, this);
-  this->debug_thread.detach();
+  if (this->debug_enabled_) {
+    this->debug_thread = std::thread(&dlio::OdomNode::debug, this);
+    this->debug_thread.detach();
+  }
 
   this->geo.first_opt_done = true;
 }
@@ -3428,9 +3486,10 @@ void dlio::OdomNode::updateState() {
 
   Eigen::Quaternionf qe, qhat, qcorr;
   qhat = this->state.q;
+  const Eigen::Quaternionf qhat_conj = qhat.conjugate();
 
   // Constuct error quaternion
-  qe = qhat.conjugate()*qin;
+  qe = qhat_conj * qin;
 
   float sgn = 1.0f;
   if (qe.w() < 0) {
@@ -3445,7 +3504,7 @@ void dlio::OdomNode::updateState() {
   Eigen::Vector3f err = pin - this->state.p;
   Eigen::Vector3f err_body;
 
-  err_body = qhat.conjugate()._transformVector(err);
+  err_body = qhat_conj._transformVector(err);
 
   const float abias_max = static_cast<float>(this->geo_abias_max_);
   const float gbias_max = static_cast<float>(this->geo_gbias_max_);
@@ -3575,15 +3634,12 @@ void dlio::OdomNode::computeSpaciousness() {
 
   // push
   this->metrics.spaciousness.push_back( median_lpf );
-
   if (this->metrics.spaciousness.size() > 400) {
-    this->metrics.spaciousness.erase(this->metrics.spaciousness.begin(),
-                                    this->metrics.spaciousness.end() - 400);
+    this->metrics.spaciousness.pop_front();
   }
 
   if (this->metrics.density.size() > 400) {
-    this->metrics.density.erase(this->metrics.density.begin(),
-                                this->metrics.density.end() - 400);
+    this->metrics.density.pop_front();
   }
 
 }
@@ -3713,10 +3769,7 @@ void dlio::OdomNode::updateKeyframes() {
   const Eigen::Vector3f&    closest_pose   = this->keyframes[closest_idx].first.first;
   const Eigen::Quaternionf& closest_pose_r = this->keyframes[closest_idx].first.second;
 
-  float dx = this->lidarPose.p[0] - closest_pose[0];
-  float dy = this->lidarPose.p[1] - closest_pose[1];
-  float dz = this->lidarPose.p[2] - closest_pose[2];
-  float dd = std::sqrt(dx*dx + dy*dy + dz*dz);
+  const float dd = closest_d;
 
   Eigen::Quaternionf dq;
   if (this->lidarPose.q.dot(closest_pose_r) < 0.f) {
@@ -4062,12 +4115,10 @@ void dlio::OdomNode::debug() {
   this->lastSysCPU = timeSample.tms_stime;
   this->lastUserCPU = timeSample.tms_utime;
 
-  if (this->cpu_percents.size() > 400) {
-    this->cpu_percents.erase(this->cpu_percents.begin(), this->cpu_percents.end() - 400);
-  }
-
-
   this->cpu_percents.push_back(cpu_percent);
+  if (this->cpu_percents.size() > 400) {
+    this->cpu_percents.pop_front();
+  }
   double avg_cpu_usage =
     std::accumulate(this->cpu_percents.begin(), this->cpu_percents.end(), 0.0) /
         static_cast<double>(this->cpu_percents.size());
