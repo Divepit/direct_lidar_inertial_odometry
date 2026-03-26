@@ -1,0 +1,12 @@
+Checks: >-
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-reserved-identifier,
+  performance-*,
+  modernize-*,
+  readability-*,
+  cppcoreguidelines-*
+HeaderFilterRegex: '(.*/)?(include/(dlio|nano_gicp)|src/(dlio|nano_gicp))/(?!nanoflann).*'
+FormatStyle: none

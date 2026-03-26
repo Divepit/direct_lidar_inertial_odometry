@@ -134,6 +134,20 @@ void LsqRegistration<PointTarget, PointSource>::computeTransformation(PointCloud
 }
 
 template <typename PointTarget, typename PointSource>
+bool LsqRegistration<PointTarget, PointSource>::computeLinearizationAtGuess(
+    const Matrix4& guess,
+    Eigen::Matrix<double, 6, 6>& H,
+    Eigen::Matrix<double, 6, 1>& b,
+    double& error) {
+  Eigen::Isometry3d x0 = Eigen::Isometry3d(guess.template cast<double>());
+
+  error = linearize(x0, &H, &b);
+  H = 0.5 * (H + H.transpose());
+
+  return std::isfinite(error) && H.allFinite() && b.allFinite();
+}
+
+template <typename PointTarget, typename PointSource>
 bool LsqRegistration<PointTarget, PointSource>::is_converged(const Eigen::Isometry3d& delta) const {
   double accum = 0.0;
   Eigen::Matrix3d R = delta.linear() - Eigen::Matrix3d::Identity();

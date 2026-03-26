@@ -27,6 +27,7 @@
   <depend>nav_msgs</depend>
   <depend>pcl_ros</depend>
   <depend>rclcpp</depend>
+  <depend>std_srvs</depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
 
   <export>

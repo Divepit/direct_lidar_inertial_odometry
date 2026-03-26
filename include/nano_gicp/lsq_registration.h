@@ -44,6 +44,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
@@ -53,7 +55,7 @@
 
 namespace nano_gicp {
 
-enum class LSQ_OPTIMIZER_TYPE { GaussNewton, LevenbergMarquardt };
+enum class LSQ_OPTIMIZER_TYPE : std::uint8_t { GaussNewton, LevenbergMarquardt };
 
 inline Eigen::Matrix3f skew(const Eigen::Vector3f& x) {
   Eigen::Matrix3f skew = Eigen::Matrix3f::Zero();
@@ -80,19 +82,17 @@ inline Eigen::Matrix3d skewd(const Eigen::Vector3d& x) {
 }
 
 inline Eigen::Quaterniond so3_exp(const Eigen::Vector3d& omega) {
-  double theta_sq = omega.dot(omega);
+  const double theta_sq = omega.dot(omega);
 
-  double theta;
   double imag_factor;
   double real_factor;
   if(theta_sq < 1e-10) {
-    theta = 0;
-    double theta_quad = theta_sq * theta_sq;
+    const double theta_quad = theta_sq * theta_sq;
     imag_factor = 0.5 - 1.0 / 48.0 * theta_sq + 1.0 / 3840.0 * theta_quad;
     real_factor = 1.0 - 1.0 / 8.0 * theta_sq + 1.0 / 384.0 * theta_quad;
   } else {
-    theta = std::sqrt(theta_sq);
-    double half_theta = 0.5 * theta;
+    const double theta = std::sqrt(theta_sq);
+    const double half_theta = 0.5 * theta;
     imag_factor = std::sin(half_theta) / theta;
     real_factor = std::cos(half_theta);
   }
@@ -146,10 +146,19 @@ protected:
 
   virtual double linearize(const Eigen::Isometry3d& trans, Eigen::Matrix<double, 6, 6>* H = nullptr, Eigen::Matrix<double, 6, 1>* b = nullptr) = 0;
   virtual double compute_error(const Eigen::Isometry3d& trans) = 0;
+  // Evaluate cost at trans using correspondences frozen from the last linearize() call.
+  // Default falls back to compute_error (refreshes correspondences).
+  virtual double compute_error_frozen(const Eigen::Isometry3d& trans) { return compute_error(trans); }
 
   bool step_optimize(Eigen::Isometry3d& x0, Eigen::Isometry3d& delta);
   bool step_gn(Eigen::Isometry3d& x0, Eigen::Isometry3d& delta);
   bool step_lm(Eigen::Isometry3d& x0, Eigen::Isometry3d& delta);
+  bool step_lm_pcg(Eigen::Isometry3d& x0, Eigen::Isometry3d& delta);
+
+  bool computeLinearizationAtGuess(const Matrix4& guess,
+                                   Eigen::Matrix<double, 6, 6>& H,
+                                   Eigen::Matrix<double, 6, 1>& b,
+                                   double& error);
 
 protected:
   double rotation_epsilon_;
