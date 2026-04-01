@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -23,6 +24,7 @@ def generate_launch_description():
         description='IMU topic name'
     )
     declare_use_sim_time_arg = DeclareLaunchArgument('use_sim_time', default_value=use_sim_time, description='Use /clock (sim time)')
+    declare_enable_rviz_arg = DeclareLaunchArgument('enable_rviz', default_value='false', description='Launch RViz with dlio.rviz config')
 
     # Load DLIO parameters
     dlio_yaml_path = PathJoinSubstitution([current_pkg, "cfg", "dlio.yaml"])
@@ -70,12 +72,23 @@ def generate_launch_description():
         respawn=True,
     )
 
+    rviz_config = PathJoinSubstitution([current_pkg, 'launch', 'dlio.rviz'])
+
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        arguments=['-d', rviz_config],
+        condition=IfCondition(LaunchConfiguration('enable_rviz')),
+    )
+
     return LaunchDescription([
-        # 1) Nodes
-        dlio_odom_node,
-        dlio_map_node,
-        # 2) Arguments
+        # 1) Arguments (must be declared before nodes)
         declare_pointcloud_topic_arg,
         declare_imu_topic_arg,
         declare_use_sim_time_arg,
+        declare_enable_rviz_arg,
+        # 2) Nodes
+        dlio_odom_node,
+        dlio_map_node,
+        rviz_node,
     ])

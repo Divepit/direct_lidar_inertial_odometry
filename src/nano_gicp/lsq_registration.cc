@@ -58,7 +58,7 @@ LsqRegistration<PointTarget, PointSource>::LsqRegistration() {
 
   lsq_optimizer_type_ = LSQ_OPTIMIZER_TYPE::LevenbergMarquardt;
   lm_debug_print_ = false;
-  lm_max_iterations_ = 10;
+  lm_max_iterations_ = 15;
   lm_init_lambda_factor_ = 1e-9;
   lm_lambda_ = -1.0;
 

@@ -2568,9 +2568,11 @@ void dlio::OdomNode::callbackImu(sensor_msgs::msg::Imu::SharedPtr imu_raw) {
 
 void dlio::OdomNode::publishPoseSnapshot() {
   // Snapshot under the same mutex used in propagate/update
-  Eigen::Vector3f p, vlin_b, vang_b;
-  Eigen::Quaternionf q;
-  rclcpp::Time stamp;
+  Eigen::Vector3f p = Eigen::Vector3f::Zero();
+  Eigen::Vector3f vlin_b = Eigen::Vector3f::Zero();
+  Eigen::Vector3f vang_b = Eigen::Vector3f::Zero();
+  Eigen::Quaternionf q = Eigen::Quaternionf::Identity();
+  rclcpp::Time stamp(0, 0);
 
   {
     std::lock_guard<std::mutex> lock(this->geo.mtx);
@@ -2583,56 +2585,46 @@ void dlio::OdomNode::publishPoseSnapshot() {
 
   q.normalize();
 
-  // state pose is dlio_odom -> base_link. Invert it to publish base_link -> dlio_odom.
-  const Eigen::Quaternionf q_bo = q.conjugate();
-  const Eigen::Vector3f p_bo = -(q_bo._transformVector(p));
+  // Build and publish Odometry (dlio_odom -> base_link)
+  // twist is expressed in child frame (base_link), so use body-frame velocities directly.
+  nav_msgs::msg::Odometry odom_msg;
+  odom_msg.header.stamp = stamp;
+  odom_msg.header.frame_id = this->odom_frame;
+  odom_msg.child_frame_id  = this->baselink_frame;
 
-  // Exact inverse twist for nav_msgs/Odometry semantics:
-  // twist is child wrt parent, expressed in child frame.
-  const Eigen::Vector3f v_ob_o = q._transformVector(vlin_b);
-  const Eigen::Vector3f w_ob_o = q._transformVector(vang_b);
-  const Eigen::Vector3f v_bo_o = -(v_ob_o + p.cross(w_ob_o));
-  const Eigen::Vector3f w_bo_o = -w_ob_o;
+  odom_msg.pose.pose.position.x = p.x();
+  odom_msg.pose.pose.position.y = p.y();
+  odom_msg.pose.pose.position.z = p.z();
+  odom_msg.pose.pose.orientation.w = q.w();
+  odom_msg.pose.pose.orientation.x = q.x();
+  odom_msg.pose.pose.orientation.y = q.y();
+  odom_msg.pose.pose.orientation.z = q.z();
 
-  // Build and publish Odometry
-  nav_msgs::msg::Odometry odom;
-  odom.header.stamp = stamp;
-  odom.header.frame_id = this->baselink_frame;
-  odom.child_frame_id  = this->odom_frame;
-
-  odom.pose.pose.position.x = p_bo.x();
-  odom.pose.pose.position.y = p_bo.y();
-  odom.pose.pose.position.z = p_bo.z();
-  odom.pose.pose.orientation.w = q_bo.w();
-  odom.pose.pose.orientation.x = q_bo.x();
-  odom.pose.pose.orientation.y = q_bo.y();
-  odom.pose.pose.orientation.z = q_bo.z();
-
-  odom.twist.twist.linear.x  = v_bo_o.x();
-  odom.twist.twist.linear.y  = v_bo_o.y();
-  odom.twist.twist.linear.z  = v_bo_o.z();
-  odom.twist.twist.angular.x = w_bo_o.x();
-  odom.twist.twist.angular.y = w_bo_o.y();
-  odom.twist.twist.angular.z = w_bo_o.z();
+  odom_msg.twist.twist.linear.x  = vlin_b.x();
+  odom_msg.twist.twist.linear.y  = vlin_b.y();
+  odom_msg.twist.twist.linear.z  = vlin_b.z();
+  odom_msg.twist.twist.angular.x = vang_b.x();
+  odom_msg.twist.twist.angular.y = vang_b.y();
+  odom_msg.twist.twist.angular.z = vang_b.z();
 
   if (hasSubscribers(this->odom_pub)) {
-    this->odom_pub->publish(odom);
+    this->odom_pub->publish(odom_msg);
   }
 
-  // Build and publish PoseStamped
-  geometry_msgs::msg::PoseStamped pose;
-  pose.header.stamp = stamp;
-  pose.header.frame_id = this->baselink_frame;
-  pose.pose.position.x = p_bo.x();
-  pose.pose.position.y = p_bo.y();
-  pose.pose.position.z = p_bo.z();
-  pose.pose.orientation.w = q_bo.w();
-  pose.pose.orientation.x = q_bo.x();
-  pose.pose.orientation.y = q_bo.y();
-  pose.pose.orientation.z = q_bo.z();
+  // Build and publish PoseStamped (dlio_odom -> base_link)
+  geometry_msgs::msg::PoseStamped pose_msg;
+  pose_msg.header.stamp = stamp;
+  pose_msg.header.frame_id = this->odom_frame;
+  pose_msg.pose.position.x = p.x();
+  pose_msg.pose.position.y = p.y();
+  pose_msg.pose.position.z = p.z();
+  pose_msg.pose.orientation.w = q.w();
+  pose_msg.pose.orientation.x = q.x();
+  pose_msg.pose.orientation.y = q.y();
+  pose_msg.pose.orientation.z = q.z();
 
   if (hasSubscribers(this->pose_pub)) {
-    this->pose_pub->publish(pose);
+    this->pose_pub->publish(pose_msg);
   }
 
   // Path: base_link pose in dlio_odom at IMU propagation rate.
@@ -2705,18 +2697,21 @@ void dlio::OdomNode::publishPoseSnapshot() {
     }
   }
 
-  // TF: base_link -> dlio_odom
+  // TF: base_link -> dlio_odom (inverted state)
+  const Eigen::Quaternionf q_inv = q.conjugate();
+  const Eigen::Vector3f p_inv = -(q_inv._transformVector(p));
+
   geometry_msgs::msg::TransformStamped tf_bl_odom;
   tf_bl_odom.header.stamp = stamp;
   tf_bl_odom.header.frame_id = this->baselink_frame;
   tf_bl_odom.child_frame_id  = this->odom_frame;
-  tf_bl_odom.transform.translation.x = p_bo.x();
-  tf_bl_odom.transform.translation.y = p_bo.y();
-  tf_bl_odom.transform.translation.z = p_bo.z();
-  tf_bl_odom.transform.rotation.w = q_bo.w();
-  tf_bl_odom.transform.rotation.x = q_bo.x();
-  tf_bl_odom.transform.rotation.y = q_bo.y();
-  tf_bl_odom.transform.rotation.z = q_bo.z();
+  tf_bl_odom.transform.translation.x = p_inv.x();
+  tf_bl_odom.transform.translation.y = p_inv.y();
+  tf_bl_odom.transform.translation.z = p_inv.z();
+  tf_bl_odom.transform.rotation.w = q_inv.w();
+  tf_bl_odom.transform.rotation.x = q_inv.x();
+  tf_bl_odom.transform.rotation.y = q_inv.y();
+  tf_bl_odom.transform.rotation.z = q_inv.z();
   br->sendTransform(tf_bl_odom);
 
   this->publishVelocityMarkers(stamp, vlin_b, vang_b);
