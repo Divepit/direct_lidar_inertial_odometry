@@ -9,36 +9,29 @@ def generate_launch_description():
     current_pkg = FindPackageShare('direct_lidar_inertial_odometry')
 
     # Args
+    rviz = LaunchConfiguration('rviz', default='true')
     pointcloud_topic = LaunchConfiguration('pointcloud_topic', default='/lidar/point_cloud')
     imu_topic = LaunchConfiguration('imu_topic', default='/imu_sensor_broadcaster/imu')
-    use_sim_time = LaunchConfiguration('use_sim_time', default='false')
+    use_sim_time = LaunchConfiguration('use_sim_time', default='true')
 
-    declare_pointcloud_topic_arg = DeclareLaunchArgument(
-        'pointcloud_topic',
-        default_value='/lidar/point_cloud',
-        description='Pointcloud topic name'
-    )
-    declare_imu_topic_arg = DeclareLaunchArgument(
-        'imu_topic',
-        default_value='/imu_sensor_broadcaster/imu',
-        description='IMU topic name'
-    )
+    declare_rviz_arg = DeclareLaunchArgument('rviz', default_value=rviz, description='Launch RViz')
+    declare_pointcloud_topic_arg = DeclareLaunchArgument('pointcloud_topic', default_value=pointcloud_topic, description='Pointcloud topic name')
+    declare_imu_topic_arg = DeclareLaunchArgument('imu_topic', default_value=imu_topic, description='IMU topic name')
     declare_use_sim_time_arg = DeclareLaunchArgument('use_sim_time', default_value=use_sim_time, description='Use /clock (sim time)')
-    declare_enable_rviz_arg = DeclareLaunchArgument('enable_rviz', default_value='false', description='Launch RViz with dlio.rviz config')
 
-    # Load DLIO parameters
-    dlio_yaml_path = PathJoinSubstitution([current_pkg, "cfg", "dlio.yaml"])
-    dlio_params_yaml_path = PathJoinSubstitution([current_pkg, "cfg", "params.yaml"])
+    # Params
+    dlio_yaml_path = PathJoinSubstitution([current_pkg, 'cfg', 'dlio.yaml'])
+    dlio_params_yaml_path = PathJoinSubstitution([current_pkg, 'cfg', 'params.yaml'])
 
-    # DLIO Odometry Node
+    # Nodes
     dlio_odom_node = Node(
-        package="direct_lidar_inertial_odometry",
-        executable="dlio_odom_node",
-        output="screen",
+        package='direct_lidar_inertial_odometry',
+        executable='dlio_odom_node',
+        output='screen',
         parameters=[dlio_yaml_path, dlio_params_yaml_path, {'use_sim_time': use_sim_time}],
         remappings=[
-            ("pointcloud", pointcloud_topic),
-            ("imu", imu_topic),
+            ('pointcloud', pointcloud_topic),
+            ('imu', imu_topic),
             ('map_pose', 'dlio/odom_node/map_pose'),
             ('map_pose_inverted', 'dlio/odom_node/map_pose_inverted'),
             ('odom', 'dlio/odom_node/odom'),
@@ -61,9 +54,9 @@ def generate_launch_description():
 
     # DLIO Mapping Node
     dlio_map_node = Node(
-        package="direct_lidar_inertial_odometry",
-        executable="dlio_map_node",
-        output="screen",
+        package='direct_lidar_inertial_odometry',
+        executable='dlio_map_node',
+        output='screen',
         parameters=[dlio_yaml_path, dlio_params_yaml_path, {'use_sim_time': use_sim_time}],
         remappings=[
             ('kf_cloud', 'dlio/odom_node/pointcloud/keyframe'),
@@ -72,23 +65,23 @@ def generate_launch_description():
         respawn=True,
     )
 
-    rviz_config = PathJoinSubstitution([current_pkg, 'launch', 'dlio.rviz'])
-
+    rviz_config_path = PathJoinSubstitution([current_pkg, 'launch', 'dlio.rviz'])
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
-        arguments=['-d', rviz_config],
-        condition=IfCondition(LaunchConfiguration('enable_rviz')),
+        name='dlio_rviz',
+        arguments=['-d', rviz_config_path],
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('rviz')),
+        parameters=[{'use_sim_time': use_sim_time}],
     )
 
     return LaunchDescription([
-        # 1) Arguments (must be declared before nodes)
+        declare_rviz_arg,
         declare_pointcloud_topic_arg,
         declare_imu_topic_arg,
         declare_use_sim_time_arg,
-        declare_enable_rviz_arg,
-        # 2) Nodes
         dlio_odom_node,
         dlio_map_node,
-        rviz_node,
+        rviz_node
     ])
