@@ -26,22 +26,26 @@ int main(int argc, char** argv) {
 
   rclcpp::init(argc, argv);
   auto node = std::make_shared<dlio::MapNode>();
+  std::weak_ptr<dlio::MapNode> weak_node(node);
   rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), /* threads */ 2);
 
   executor.add_node(node);
 
-  // Async spinner
-  std::thread spin_thread([&executor]() {
-    executor.spin();
-  });
-
-  // On shutdown, stop the executor cleanly
-  rclcpp::on_shutdown([&executor]() {
+  rclcpp::on_shutdown([weak_node, &executor]() {
+    if (auto node = weak_node.lock()) {
+      node->requestStop();
+    }
     executor.cancel();
   });
 
-  // Wait for spinner to exit, then shutdown ROS
-  spin_thread.join();
-  rclcpp::shutdown();
+  executor.spin();
+
+  node->requestStop();
+  executor.remove_node(node);
+  node.reset();
+
+  if (rclcpp::ok()) {
+    rclcpp::shutdown();
+  }
   return 0;
 }

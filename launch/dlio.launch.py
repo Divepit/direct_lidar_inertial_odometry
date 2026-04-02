@@ -9,10 +9,10 @@ def generate_launch_description():
     current_pkg = FindPackageShare('direct_lidar_inertial_odometry')
 
     # Args
-    rviz = LaunchConfiguration('rviz', default='true')
+    rviz = LaunchConfiguration('rviz', default='false')
     pointcloud_topic = LaunchConfiguration('pointcloud_topic', default='/lidar/point_cloud')
     imu_topic = LaunchConfiguration('imu_topic', default='/imu_sensor_broadcaster/imu')
-    use_sim_time = LaunchConfiguration('use_sim_time', default='true')
+    use_sim_time = LaunchConfiguration('use_sim_time', default='false')
 
     declare_rviz_arg = DeclareLaunchArgument('rviz', default_value=rviz, description='Launch RViz')
     declare_pointcloud_topic_arg = DeclareLaunchArgument('pointcloud_topic', default_value=pointcloud_topic, description='Pointcloud topic name')

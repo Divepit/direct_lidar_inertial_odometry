@@ -33,12 +33,14 @@ class dlio::MapNode: public rclcpp::Node {
 
 public:
   MapNode();
-  ~MapNode();
+  ~MapNode() override;
 
   void start();
+  void requestStop();
 
 private:
   void getParams();
+  bool shouldStop();
 
   void callbackKeyframe(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& keyframe);
   void doPeriodicCrop();
@@ -82,4 +84,5 @@ private:
   // (optional) live param updates
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr params_cb_;
   rclcpp::TimerBase::SharedPtr crop_timer_;
+  std::atomic_bool stop_requested_{false};
 };

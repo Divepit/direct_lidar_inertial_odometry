@@ -400,15 +400,59 @@ RCLCPP_WARN(
 }
 
 dlio::OdomNode::~OdomNode() {
+  this->requestStop();
 
-  stop_.store(true, std::memory_order_relaxed);
+  if (pointcloud_worker_.joinable()) pointcloud_worker_.join();
+  if (pub_worker_.joinable()) pub_worker_.join();
+  if (submap_future.valid()) submap_future.wait();
+  if (debug_future_.valid()) debug_future_.wait();
+
+}
+
+void dlio::OdomNode::requestStop() {
+  const bool already_stopping = stop_.exchange(true, std::memory_order_relaxed);
+  if (!already_stopping) {
+    RCLCPP_INFO(this->get_logger(),
+                "\033[38;5;214m[SHUTDOWN] Odom node stopping. Draining workers and exiting...\033[0m");
+  }
+
+  {
+    std::lock_guard<std::mutex> lk(this->main_loop_running_mutex);
+    this->main_loop_running = false;
+  }
+  {
+    std::lock_guard<std::mutex> lk(this->q_mtx_);
+    this->q_.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lk(this->pc_q_mtx_);
+    this->pc_q_.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lock(this->reset_mutex_);
+    this->reset_requested_ = false;
+    if (this->reset_in_progress_.exchange(false)) {
+      this->reset_succeeded_ = false;
+      this->reset_status_message_ = "Shutdown requested.";
+    } else if (this->reset_status_message_.empty()) {
+      this->reset_status_message_ = "Shutdown requested.";
+    }
+  }
+
   pc_q_cv_.notify_all();
   q_cv_.notify_all();
   cv_imu_stamp.notify_all();
   submap_build_cv.notify_all();
-  if (pointcloud_worker_.joinable()) pointcloud_worker_.join();
-  if (pub_worker_.joinable()) pub_worker_.join();
+  reset_done_cv_.notify_all();
+}
 
+bool dlio::OdomNode::shouldStop() {
+  if (stop_.load(std::memory_order_relaxed)) {
+    return true;
+  }
+
+  const auto context = this->get_node_base_interface()->get_context();
+  return !context || !context->is_valid();
 }
 
 void dlio::OdomNode::captureInitialImuBaseline(
@@ -446,7 +490,7 @@ void dlio::OdomNode::captureInitialImuBaseline(
 
 bool dlio::OdomNode::beginPendingReset() {
   std::lock_guard<std::mutex> lock(this->reset_mutex_);
-  if (this->reset_in_progress_.load() || !this->reset_requested_) {
+  if (this->shouldStop() || this->reset_in_progress_.load() || !this->reset_requested_) {
     return false;
   }
 
@@ -460,14 +504,23 @@ bool dlio::OdomNode::beginPendingReset() {
 void dlio::OdomNode::finishPendingReset(bool success, const std::string& message) {
   {
     std::lock_guard<std::mutex> lock(this->reset_mutex_);
+    if (this->shouldStop()) {
+      success = false;
+      this->reset_status_message_ = "Shutdown requested.";
+    } else {
+      this->reset_status_message_ = message;
+    }
     this->reset_in_progress_.store(false);
     this->reset_succeeded_ = success;
-    this->reset_status_message_ = message;
   }
   this->reset_done_cv_.notify_all();
 }
 
 void dlio::OdomNode::requestMapReset(const std::string& origin) {
+  if (this->shouldStop()) {
+    return;
+  }
+
   if (!this->map_reset_client_) {
     return;
   }
@@ -481,21 +534,28 @@ void dlio::OdomNode::requestMapReset(const std::string& origin) {
 
   auto map_req = std::make_shared<std_srvs::srv::Trigger::Request>();
   auto map_future = this->map_reset_client_->async_send_request(map_req);
-  if (map_future.wait_for(std::chrono::seconds(3)) == std::future_status::ready) {
-    auto map_res = map_future.get();
-    if (map_res->success) {
-      RCLCPP_INFO(this->get_logger(),
-                  "\033[33m[RESET:%s] Map reset confirmed: %s\033[0m",
-                  origin.c_str(), map_res->message.c_str());
-    } else {
-      RCLCPP_WARN(this->get_logger(),
-                  "[RESET:%s] Map reset returned failure: %s",
-                  origin.c_str(), map_res->message.c_str());
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (!this->shouldStop()) {
+    if (map_future.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready) {
+      auto map_res = map_future.get();
+      if (map_res->success) {
+        RCLCPP_INFO(this->get_logger(),
+                    "\033[33m[RESET:%s] Map reset confirmed: %s\033[0m",
+                    origin.c_str(), map_res->message.c_str());
+      } else {
+        RCLCPP_WARN(this->get_logger(),
+                    "[RESET:%s] Map reset returned failure: %s",
+                    origin.c_str(), map_res->message.c_str());
+      }
+      return;
     }
-  } else {
-    RCLCPP_WARN(this->get_logger(),
-                "[RESET:%s] Map reset service call timed out after 3 s.",
-                origin.c_str());
+
+    if (std::chrono::steady_clock::now() >= deadline) {
+      RCLCPP_WARN(this->get_logger(),
+                  "[RESET:%s] Map reset service call timed out after 3 s.",
+                  origin.c_str());
+      return;
+    }
   }
 }
 
@@ -799,14 +859,14 @@ void dlio::OdomNode::performReset() {
                 this->restart_gate_min_eigenvalue_);
 
     int dropped = 0;
-    while (!this->stop_.load(std::memory_order_relaxed)) {
+    while (!this->shouldStop()) {
       PointCloudJob gate_job;
       {
         std::unique_lock<std::mutex> lk(this->pc_q_mtx_);
         this->pc_q_cv_.wait(lk, [this]{
-          return this->stop_.load(std::memory_order_relaxed) || !this->pc_q_.empty();
+          return this->shouldStop() || !this->pc_q_.empty();
         });
-        if (this->stop_.load(std::memory_order_relaxed)) break;
+        if (this->shouldStop()) break;
         gate_job = std::move(this->pc_q_.front());
         this->pc_q_.pop_front();
       }
@@ -828,7 +888,7 @@ void dlio::OdomNode::performReset() {
                   "[RESET] Geometry gate: scan #%d dropped (degenerate).", dropped);
     }
 
-    if (this->stop_.load(std::memory_order_relaxed)) {
+    if (this->shouldStop()) {
       this->finishPendingReset(false, "Node stopped during geometry gate.");
       return;
     }
@@ -943,6 +1003,12 @@ void dlio::OdomNode::resetService(
   {
     std::lock_guard<std::mutex> lock(this->reset_mutex_);
 
+    if (this->shouldStop()) {
+      res->success = false;
+      res->message = "Reset rejected: node is shutting down.";
+      return;
+    }
+
     if (!this->initial_imu_baseline_.valid) {
       res->success = false;
       res->message = "Reset rejected: initial IMU baseline has not been captured yet.";
@@ -966,7 +1032,9 @@ void dlio::OdomNode::resetService(
 
   if (!this->beginPendingReset()) {
     res->success = false;
-    res->message = "Reset rejected: failed to transition reset request into the pending state.";
+    res->message = this->shouldStop()
+        ? "Reset rejected: node is shutting down."
+        : "Reset rejected: failed to transition reset request into the pending state.";
     return;
   }
 
@@ -979,11 +1047,31 @@ void dlio::OdomNode::resetService(
   // Block until the worker thread calls finishPendingReset().
   {
     std::unique_lock<std::mutex> lock(this->reset_mutex_);
-    this->reset_done_cv_.wait(lock, [this]{ return !this->reset_in_progress_.load(); });
+    this->reset_done_cv_.wait(lock, [this]{
+      return this->shouldStop() || !this->reset_in_progress_.load();
+    });
+  }
+
+  if (this->shouldStop()) {
+    std::lock_guard<std::mutex> lock(this->reset_mutex_);
+    res->success = false;
+    res->message = this->reset_status_message_.empty()
+        ? "Reset aborted: node is shutting down."
+        : this->reset_status_message_;
+    return;
   }
 
   RCLCPP_INFO(this->get_logger(), "\033[33m[RESET] Odom reset done. Triggering map reset...\033[0m");
   this->requestMapReset("service");
+
+  if (this->shouldStop()) {
+    std::lock_guard<std::mutex> lock(this->reset_mutex_);
+    res->success = false;
+    res->message = this->reset_status_message_.empty()
+        ? "Reset aborted: node is shutting down."
+        : this->reset_status_message_;
+    return;
+  }
 
   {
     std::lock_guard<std::mutex> lock(this->reset_mutex_);
@@ -1027,12 +1115,12 @@ void dlio::OdomNode::enqueuePublish(
 }
 
 void dlio::OdomNode::workerLoop() {
-  while (!stop_.load(std::memory_order_relaxed)) {
+  while (!this->shouldStop()) {
     PubJob job;
     {
       std::unique_lock<std::mutex> lk(q_mtx_);
-      q_cv_.wait(lk, [this]{ return stop_.load() || !q_.empty(); });
-      if (stop_.load()) break;
+      q_cv_.wait(lk, [this]{ return this->shouldStop() || !q_.empty(); });
+      if (this->shouldStop()) break;
       job = std::move(q_.front());
       q_.pop_front();
     }
@@ -1154,19 +1242,19 @@ void dlio::OdomNode::pointCloudWorkerLoop() {
         return header_time + max_rel_s;
       };
 
-  while (!stop_.load(std::memory_order_relaxed)) {
+  while (!this->shouldStop()) {
     PointCloudJob job;
     {
       std::unique_lock<std::mutex> lk(pc_q_mtx_);
       // Gap 2 fix: predicate now also wakes on reset_in_progress_ so the worker
       // is not left blocked while the service thread waits for it.
       pc_q_cv_.wait(lk, [this]{
-        return stop_.load(std::memory_order_relaxed)
+        return this->shouldStop()
             || this->reset_in_progress_.load()
             || !pc_q_.empty();
       });
 
-      if (stop_.load(std::memory_order_relaxed)) {
+      if (this->shouldStop()) {
         break;
       }
 
@@ -1197,14 +1285,14 @@ void dlio::OdomNode::pointCloudWorkerLoop() {
       // Gap 2 fix: also wake on reset_in_progress_ so clearing imu_buffer
       // during reset doesn't leave this wait stuck forever.
       this->cv_imu_stamp.wait(imu_lock, [this, required_imu_time]{
-        return this->stop_.load(std::memory_order_relaxed)
+        return this->shouldStop()
             || this->reset_in_progress_.load()
             || (!this->imu_buffer.empty() &&
                 this->imu_buffer.front().stamp >= required_imu_time);
       });
     }
 
-    if (stop_.load(std::memory_order_relaxed)) {
+    if (this->shouldStop()) {
       break;
     }
 
@@ -2371,8 +2459,10 @@ void dlio::OdomNode::processPointCloud(const sensor_msgs::msg::PointCloud2::Shar
 
   // Debug statements and publish custom DLIO message
   if (this->debug_enabled_) {
-    this->debug_thread = std::thread(&dlio::OdomNode::debug, this);
-    this->debug_thread.detach();
+    if (!this->debug_future_.valid() ||
+        this->debug_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+      this->debug_future_ = std::async(std::launch::async, &dlio::OdomNode::debug, this);
+    }
   }
 
   this->geo.first_opt_done = true;
@@ -2567,7 +2657,6 @@ void dlio::OdomNode::callbackImu(sensor_msgs::msg::Imu::SharedPtr imu_raw) {
 }
 
 void dlio::OdomNode::publishPoseSnapshot() {
-  // Snapshot under the same mutex used in propagate/update
   Eigen::Vector3f p = Eigen::Vector3f::Zero();
   Eigen::Vector3f vlin_b = Eigen::Vector3f::Zero();
   Eigen::Vector3f vang_b = Eigen::Vector3f::Zero();
@@ -4042,7 +4131,7 @@ void dlio::OdomNode::buildKeyframesAndSubmap(const State& vehicle_state) {
 
 void dlio::OdomNode::pauseSubmapBuildIfNeeded() {
   std::unique_lock<decltype(this->main_loop_running_mutex)> lock(this->main_loop_running_mutex);
-  this->submap_build_cv.wait(lock, [this]{ return !this->main_loop_running || this->stop_.load(std::memory_order_relaxed); });
+  this->submap_build_cv.wait(lock, [this]{ return !this->main_loop_running || this->shouldStop(); });
 }
 
 void dlio::OdomNode::debug() {

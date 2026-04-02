@@ -53,9 +53,10 @@ class dlio::OdomNode: public rclcpp::Node {
 public:
 
   OdomNode();
-  ~OdomNode();
+  ~OdomNode() override;
 
   void start();
+  void requestStop();
 
 private:
 
@@ -80,6 +81,7 @@ private:
   bool triggerInternalReset(const std::string& reason);
   void requestMapReset(const std::string& origin);
   bool scanPassesGeometryGate(const sensor_msgs::msg::PointCloud2::SharedPtr& pc);
+  bool shouldStop();
 
 void publishToROS(const pcl::PointCloud<PointType>::ConstPtr& published_cloud,
                   const Eigen::Ref<const Eigen::Matrix4f>& T_cloud,
@@ -226,7 +228,7 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   std::thread publish_thread;
   std::thread publish_keyframe_thread;
   std::thread metrics_thread;
-  std::thread debug_thread;
+  std::future<void> debug_future_;
 
   // Pointcloud rate estimation (used when debug is disabled)
   std::deque<std::chrono::steady_clock::time_point> pc_rate_window_;
@@ -281,10 +283,10 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   std::vector<int> submap_kf_idx_curr;
   std::vector<int> submap_kf_idx_prev;
 
-  bool new_submap_is_ready;
+  bool new_submap_is_ready = false;
   std::future<void> submap_future;
   std::condition_variable submap_build_cv;
-  bool main_loop_running;
+  bool main_loop_running = false;
   std::mutex main_loop_running_mutex;
 
   // Timestamps

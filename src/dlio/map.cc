@@ -110,7 +110,34 @@ dlio::MapNode::MapNode() : Node("dlio_map_node") {
   pcl::console::setVerbosityLevel(pcl::console::L_ERROR);
 }
 
-dlio::MapNode::~MapNode() {}
+dlio::MapNode::~MapNode() {
+  this->requestStop();
+  params_cb_.reset();
+  crop_timer_.reset();
+}
+
+void dlio::MapNode::requestStop() {
+  if (stop_requested_.exchange(true, std::memory_order_relaxed)) {
+    return;
+  }
+
+  RCLCPP_INFO(this->get_logger(),
+              "\033[38;5;214m[SHUTDOWN] Map node stopping. Cancelling timers and exiting...\033[0m");
+
+  if (crop_timer_) {
+    crop_timer_->cancel();
+    crop_timer_.reset();
+  }
+}
+
+bool dlio::MapNode::shouldStop() {
+  if (stop_requested_.load(std::memory_order_relaxed)) {
+    return true;
+  }
+
+  const auto context = this->get_node_base_interface()->get_context();
+  return !context || !context->is_valid();
+}
 
 void dlio::MapNode::getParams() {
   this->declare_parameter<std::string>("frames/odom", "odom");
@@ -132,6 +159,10 @@ void dlio::MapNode::getParams() {
 void dlio::MapNode::start() {}
 
 void dlio::MapNode::callbackMapPose(const nav_msgs::msg::Odometry::ConstSharedPtr &odom) {
+  if (this->shouldStop()) {
+    return;
+  }
+
   std::lock_guard<std::mutex> lk(pose_mtx_);
   robot_xyz_ = Eigen::Vector3f(static_cast<float>(odom->pose.pose.position.x),
                                static_cast<float>(odom->pose.pose.position.y),
@@ -140,6 +171,10 @@ void dlio::MapNode::callbackMapPose(const nav_msgs::msg::Odometry::ConstSharedPt
 }
 
 void dlio::MapNode::callbackKeyframe(const sensor_msgs::msg::PointCloud2::ConstSharedPtr &keyframe) {
+  if (this->shouldStop()) {
+    return;
+  }
+
   // Convert to PCL
   pcl::PointCloud<PointType>::Ptr keyframe_pcl(new pcl::PointCloud<PointType>());
   pcl::fromROSMsg(*keyframe, *keyframe_pcl);
@@ -209,6 +244,10 @@ void dlio::MapNode::callbackKeyframe(const sensor_msgs::msg::PointCloud2::ConstS
 }
 
 void dlio::MapNode::doPeriodicCrop() {
+  if (this->shouldStop()) {
+    return;
+  }
+
   if (!crop_enabled_) return;
 
   Eigen::Vector3f pose;
@@ -243,6 +282,12 @@ void dlio::MapNode::doPeriodicCrop() {
 
 void dlio::MapNode::resetMap(std::shared_ptr<std_srvs::srv::Trigger::Request> /*unused*/,  // NOLINT(performance-unnecessary-value-param)
                              std::shared_ptr<std_srvs::srv::Trigger::Response> res) {  // NOLINT(performance-unnecessary-value-param)
+  if (this->shouldStop()) {
+    res->success = false;
+    res->message = "Map reset aborted: node is shutting down.";
+    return;
+  }
+
   // Acquire both mutexes together (always map → pose order to prevent deadlock)
   std::scoped_lock map_pose_lock(map_mtx_, pose_mtx_);
 
@@ -258,7 +303,7 @@ void dlio::MapNode::resetMap(std::shared_ptr<std_srvs::srv::Trigger::Request> /*
     crop_timer_->cancel();
     crop_timer_.reset();
   }
-  if (crop_enabled_ && crop_period_sec_ > 0.0) {
+  if (!this->shouldStop() && crop_enabled_ && crop_period_sec_ > 0.0) {
     auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<double>(crop_period_sec_));
     crop_timer_ = this->create_wall_timer(
