@@ -56,6 +56,7 @@ private:
 
   void callbackPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr pc);
   void callbackImu(const sensor_msgs::msg::Imu::SharedPtr imu);
+  void callbackExternalOdom(const nav_msgs::msg::Odometry::SharedPtr odom);
 
   void publishPose();
 
@@ -113,7 +114,8 @@ private:
   // Subscribers
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr lidar_sub;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
-  rclcpp::CallbackGroup::SharedPtr lidar_cb_group, imu_cb_group;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr external_odom_sub;
+  rclcpp::CallbackGroup::SharedPtr lidar_cb_group, imu_cb_group, external_odom_cb_group;
 
   // Publishers
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub;
@@ -295,6 +297,12 @@ private:
   };
   Pose lidarPose;
   Pose imuPose;
+
+  // External odometry (replaces IMU for initialization and T_prior)
+  Pose externalOdomPose;
+  Pose prevExternalOdomPose;
+  bool first_external_odom_received;
+  std::mutex mtx_external_odom;
 
   // Metrics
   struct Metrics {

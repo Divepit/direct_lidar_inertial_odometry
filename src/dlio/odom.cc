@@ -27,6 +27,7 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node")
   this->dlio_initialized = false;
   this->first_valid_scan = false;
   this->first_imu_received = false;
+  this->first_external_odom_received = false;
   if (this->imu_calibrate_)
   {
     this->imu_calibrated = false;
@@ -50,7 +51,14 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node")
   this->imu_sub = this->create_subscription<sensor_msgs::msg::Imu>("imu", rclcpp::SensorDataQoS(),
                                                                    std::bind(&dlio::OdomNode::callbackImu, this, std::placeholders::_1), imu_sub_opt);
 
-  this->odom_pub = this->create_publisher<nav_msgs::msg::Odometry>("odom", 1);
+  this->external_odom_cb_group = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  auto external_odom_sub_opt = rclcpp::SubscriptionOptions();
+  external_odom_sub_opt.callback_group = this->external_odom_cb_group;
+  this->external_odom_sub = this->create_subscription<nav_msgs::msg::Odometry>("external_odom", 100,
+      std::bind(&dlio::OdomNode::callbackExternalOdom, this, std::placeholders::_1), external_odom_sub_opt);
+
+  // odom_pub disabled — we use external odometry as input, so publishing our own odom is redundant
+  // this->odom_pub = this->create_publisher<nav_msgs::msg::Odometry>("odom", 1);
   this->pose_pub = this->create_publisher<geometry_msgs::msg::PoseStamped>("pose", 1);
   this->path_pub = this->create_publisher<nav_msgs::msg::Path>("path", 1);
   this->kf_pose_pub = this->create_publisher<geometry_msgs::msg::PoseArray>("kf_pose", 1);
@@ -357,7 +365,8 @@ void dlio::OdomNode::publishPose()
   this->odom_ros.twist.twist.angular.y = this->state.v.ang.b[1];
   this->odom_ros.twist.twist.angular.z = this->state.v.ang.b[2];
 
-  this->odom_pub->publish(this->odom_ros);
+  // odom_pub->publish disabled — external odometry is used as input instead
+  // this->odom_pub->publish(this->odom_ros);
 
   // geometry_msgs::msg::PoseStamped
   this->pose_ros.header.stamp = this->imu_stamp;
@@ -583,11 +592,14 @@ void dlio::OdomNode::preprocessPoints()
 
     this->scan_stamp = rclcpp::Time(this->scan_header_stamp).seconds();
 
-    // don't process scans until IMU data is present
+    // don't process scans until either IMU data or external odom is present
     if (!this->first_valid_scan)
     {
 
-      if (this->imu_buffer.empty() || this->scan_stamp <= this->imu_buffer.back().stamp)
+      bool imu_ready = !this->imu_buffer.empty() && this->scan_stamp > this->imu_buffer.back().stamp;
+      bool ext_odom_ready = this->first_external_odom_received;
+
+      if (!imu_ready && !ext_odom_ready)
       {
         return;
       }
@@ -598,14 +610,36 @@ void dlio::OdomNode::preprocessPoints()
     else
     {
 
-      // IMU prior for second scan onwards
-      std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> frames;
-      frames = this->integrateImu(this->prev_scan_stamp, this->lidarPose.q, this->lidarPose.p,
-                                  this->geo.prev_vel.cast<float>(), {this->scan_stamp});
-
-      if (frames.size() > 0)
+      if (!this->imu_buffer.empty())
       {
-        this->T_prior = frames.back();
+        // IMU prior: integrate IMU between scans
+        std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> frames;
+        frames = this->integrateImu(this->prev_scan_stamp, this->lidarPose.q, this->lidarPose.p,
+                                    this->geo.prev_vel.cast<float>(), {this->scan_stamp});
+
+        if (frames.size() > 0)
+        {
+          this->T_prior = frames.back();
+        }
+        else
+        {
+          this->T_prior = this->T;
+        }
+      }
+      else if (this->first_external_odom_received)
+      {
+        // External odom prior: compute delta pose from external odometry and apply to current T
+        // This gives GICP a good initial guess without IMU integration
+        std::unique_lock<std::mutex> lock(this->mtx_external_odom);
+        Eigen::Vector3f dp = this->externalOdomPose.p - this->prevExternalOdomPose.p;
+        Eigen::Quaternionf dq = this->prevExternalOdomPose.q.inverse() * this->externalOdomPose.q;
+        lock.unlock();
+
+        Eigen::Matrix4f delta = Eigen::Matrix4f::Identity();
+        delta.block<3,3>(0,0) = dq.toRotationMatrix();
+        delta.block<3,1>(0,3) = dp;
+
+        this->T_prior = delta * this->T;
       }
       else
       {
@@ -800,15 +834,18 @@ void dlio::OdomNode::setInputSource()
 void dlio::OdomNode::initializeDLIO()
 {
 
-  // Wait for IMU
-  if (!this->first_imu_received || !this->imu_calibrated)
+  // Accept either IMU calibration OR external odometry as initialization signal
+  bool imu_ready = this->first_imu_received && this->imu_calibrated;
+  bool ext_odom_ready = this->first_external_odom_received;
+
+  if (!imu_ready && !ext_odom_ready)
   {
     return;
   }
 
   this->dlio_initialized = true;
   std::cout << std::endl
-            << " DLIO initialized!" << std::endl;
+            << " DLIO initialized! (via " << (ext_odom_ready ? "external odometry" : "IMU") << ")" << std::endl;
 }
 
 void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr pc)
@@ -1947,6 +1984,36 @@ void dlio::OdomNode::buildKeyframesAndSubmap(State vehicle_state)
   this->pauseSubmapBuildIfNeeded();
 
   this->buildSubmap(vehicle_state);
+}
+
+void dlio::OdomNode::callbackExternalOdom(const nav_msgs::msg::Odometry::SharedPtr odom)
+{
+  std::unique_lock<std::mutex> lock(this->mtx_external_odom);
+
+  // Store previous pose before updating
+  this->prevExternalOdomPose = this->externalOdomPose;
+
+  // Update current pose from external odometry
+  this->externalOdomPose.p = Eigen::Vector3f(
+      odom->pose.pose.position.x,
+      odom->pose.pose.position.y,
+      odom->pose.pose.position.z);
+  this->externalOdomPose.q = Eigen::Quaternionf(
+      odom->pose.pose.orientation.w,
+      odom->pose.pose.orientation.x,
+      odom->pose.pose.orientation.y,
+      odom->pose.pose.orientation.z);
+
+  if (!this->first_external_odom_received)
+  {
+    // Initialize DLIO's world pose from absolute Gazebo ground truth
+    this->T = Eigen::Matrix4f::Identity();
+    this->T.block<3,3>(0,0) = this->externalOdomPose.q.toRotationMatrix();
+    this->T.block<3,1>(0,3) = this->externalOdomPose.p;
+
+    this->prevExternalOdomPose = this->externalOdomPose;
+    this->first_external_odom_received = true;
+  }
 }
 
 void dlio::OdomNode::pauseSubmapBuildIfNeeded()
