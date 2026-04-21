@@ -12,6 +12,8 @@
 
 // SYSTEM
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 
 #ifdef HAS_CPUID
 #include <cpuid.h>
@@ -31,6 +33,9 @@
 #include <string>
 #include <sys/times.h>
 #include <thread>
+#include <malloc.h>
+#include <memory>
+#include <cmath>
 
 template <typename T>
 std::string to_string_with_precision(const T a_value, const int n = 6)
@@ -51,12 +56,12 @@ std::string to_string_with_precision(const T a_value, const int n = 6)
 #include <nano_gicp/nano_gicp.h>
 
 namespace dlio {
-  enum class SensorType { OUSTER, VELODYNE, HESAI, LIVOX, UNKNOWN };
+  enum class SensorType : std::uint8_t { OUSTER, VELODYNE, HESAI, LIVOX, UNKNOWN };
 
   class OdomNode;
   class MapNode;
 
-  struct Point {
+  struct EIGEN_ALIGN16 Point {
     Point(): data{0.f, 0.f, 0.f, 1.f} {}
 
     PCL_ADD_POINT4D;
@@ -68,7 +73,7 @@ namespace dlio {
                        // (Livox) absolute timestamp in (seconds * 10e9)
     };
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-  } EIGEN_ALIGN16;
+  };
 }
 
 POINT_CLOUD_REGISTER_POINT_STRUCT(dlio::Point,

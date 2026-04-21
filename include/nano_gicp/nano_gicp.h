@@ -44,6 +44,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
@@ -58,7 +60,7 @@ namespace nano_gicp {
 
 typedef std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> CovarianceList;
 
-enum class RegularizationMethod { NONE, MIN_EIG, NORMALIZED_MIN_EIG, PLANE, FROBENIUS };
+enum class RegularizationMethod : std::uint8_t { NONE, MIN_EIG, NORMALIZED_MIN_EIG, PLANE, FROBENIUS };
 
 template<typename PointSource, typename PointTarget>
 class NanoGICP : public LsqRegistration<PointSource, PointTarget> {
@@ -120,11 +122,17 @@ protected:
   virtual double linearize(const Eigen::Isometry3d& trans, Eigen::Matrix<double, 6, 6>* H, Eigen::Matrix<double, 6, 1>* b) override;
 
   virtual double compute_error(const Eigen::Isometry3d& trans) override;
+  virtual double compute_error_frozen(const Eigen::Isometry3d& trans) override;
 
   template<typename PointT>
   bool calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud, const nanoflann::KdTreeFLANN<PointT>& kdtree, CovarianceList& covariances, float& density);
 
 public:
+  bool computeInitialHessianAtGuess(const Matrix4& guess,
+                                    Eigen::Matrix<double, 6, 6>& H,
+                                    Eigen::Matrix<double, 6, 1>& b,
+                                    double& error);
+
   std::shared_ptr<const nanoflann::KdTreeFLANN<PointSource>> source_kdtree_;
   std::shared_ptr<const nanoflann::KdTreeFLANN<PointTarget>> target_kdtree_;
 
@@ -147,6 +155,10 @@ protected:
 
   std::vector<int> correspondences_;
   std::vector<float> sq_distances_;
+
+  // Set by computeInitialHessianAtGuess() after building correspondences.
+  // Causes the first linearize() call in the subsequent align() to skip
+  // update_correspondences(), avoiding a redundant k-NN pass.
+  bool correspondences_precomputed_;
 };
 }  // namespace nano_gicp
-

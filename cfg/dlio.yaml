@@ -17,6 +17,11 @@
 
     adaptive: true
 
+    adaptive/spaciousness/min: 0.25
+    adaptive/spaciousness/max: 4.0
+    adaptive/density/factor_min: 0.5
+    adaptive/density/factor_max: 2.0
+
     pointcloud/deskew: true
     pointcloud/voxelize: true
 

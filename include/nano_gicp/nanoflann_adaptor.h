@@ -49,7 +49,7 @@
 #include <pcl/point_types.h>
 #include <pcl/kdtree/kdtree_flann.h>
 
-#include "nano_gicp/nanoflann.h"
+#include "nano_gicp/nanoflann.hpp"
 
 namespace nanoflann
 {
@@ -86,7 +86,7 @@ public:
 
 protected:
 
-  nanoflann::SearchParams _params;
+  nanoflann::SearchParameters _params;
 
   struct PointCloud_Adaptor
   {
@@ -148,7 +148,7 @@ int KdTreeFLANN<PointT>::nearestKSearch(const PointT &point, int num_closest,
   nanoflann::KNNResultSet<float,int> resultSet(num_closest);
   resultSet.init( k_indices.data(), k_sqr_distances.data());
   _kdtree.findNeighbors(resultSet, point.data, _params );
-  return resultSet.size();
+  return static_cast<int>(resultSet.size());
 }
 
 template<typename PointT> inline
@@ -156,22 +156,20 @@ int KdTreeFLANN<PointT>::radiusSearch(const PointT &point, double radius,
                               std::vector<int> &k_indices,
                               std::vector<float> &k_sqr_distances) const
 {
-  static std::vector<std::pair<int, float> > indices_dist;
+  std::vector<nanoflann::ResultItem<int, float> > indices_dist;
   indices_dist.reserve( 128 );
 
-  RadiusResultSet<float, int> resultSet(radius, indices_dist);
-  const size_t nFound = _kdtree.findNeighbors(resultSet, point.data, _params);
-
-  if (_params.sorted)
-    std::sort(indices_dist.begin(), indices_dist.end(), IndexDist_Sorter() );
+  // Use the upstream radius-search API to keep behavior consistent with
+  // current nanoflann releases and avoid relying on internal result-set details.
+  const size_t nFound = _kdtree.radiusSearch(point.data, static_cast<float>(radius), indices_dist, _params);
 
   k_indices.resize(nFound);
   k_sqr_distances.resize(nFound);
-  for(int i=0; i<nFound; i++ ){
+  for(size_t i=0; i<nFound; i++ ){
     k_indices[i]       = indices_dist[i].first;
     k_sqr_distances[i] = indices_dist[i].second;
   }
-  return nFound;
+  return static_cast<int>(nFound);
 }
 
 template<typename PointT> inline

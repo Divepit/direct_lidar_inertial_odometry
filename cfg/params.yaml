@@ -13,14 +13,21 @@
 /**:
   ros__parameters:
     use_sim_time: false
-    frames/odom: odom
+    frames/odom: dlio_odom
     frames/baselink: base
     frames/lidar: lidar
     frames/imu: imu
 
     map/waitUntilMove: false
     map/dense/filtered: false
-    map/sparse/leafSize: 0.2
+    map/sparse/leafSize: 0.15
+
+    map/crop/enabled: true       # set true to crop
+    map/crop/box_size: 20.0      # meters (edge length of cube)
+    map/crop/padding: 2.0        # meters of extra margin to reduce churn
+    map/crop/period_sec: 2.0     # crop the stored map every N seconds
+
+    odom/debug/enabled: false
 
     odom/gravity: 9.80665
     odom/computeTimeOffset: false
@@ -35,23 +42,47 @@
     odom/preprocessing/voxelFilter/res: 0.1
 
     odom/keyframe/threshD: 10.25
-    odom/keyframe/threshR: 15.0
+    odom/keyframe/threshR: 10.0
 
     odom/submap/keyframe/knn: 10
     odom/submap/keyframe/kcv: 10
     odom/submap/keyframe/kcc: 10
+
     odom/gicp/minNumPoints: 128
-    odom/gicp/kCorrespondences: 20
-    odom/gicp/maxCorrespondenceDistance: 1.0
+    odom/gicp/kCorrespondences: 21
+    odom/gicp/maxCorrespondenceDistance: 0.5
     odom/gicp/maxIterations: 64
+
     odom/gicp/transformationEpsilon: 0.005
     odom/gicp/rotationEpsilon: 0.001
-    odom/gicp/initLambdaFactor: 1e-7
 
-    odom/geo/Kp: 4.5
+    odom/gicp/initLambdaFactor: 1e-6
+    odom/gicp/degeneracy/enabled: true
+    odom/gicp/degeneracy/trans_eig_abs_threshold: 50.0
+    odom/gicp/degeneracy/reset_consecutive_count: 10
+
+    odom/restart/geometry_gate/enabled: true
+    odom/restart/geometry_gate/min_eigenvalue: 100.0
+
+    # Aggressive (wn=3.0, zeta=0.85): Kp=5.1, Kv=9.0, Kq=12.0, Kab=3.0, Kgb=1.5
+    odom/geo/Kp: 5.1
     odom/geo/Kv: 11.25
     odom/geo/Kq: 4.0
     odom/geo/Kab: 2.25
     odom/geo/Kgb: 1.0
     odom/geo/abias_max: 5.0
     odom/geo/gbias_max: 0.5
+
+    # Visualization (velocity markers)
+    viz/vel_marker/enabled: true
+    viz/vel_marker/scale_lin: 0.5
+    viz/vel_marker/ang/radius_gain: 0.20
+    viz/vel_marker/ang/r_min: 0.10
+    viz/vel_marker/ang/r_max: 0.50
+    viz/vel_marker/thickness: 0.03
+    viz/vel_marker/lifetime: 0.10
+    viz/corr_marker/enabled: true
+    viz/corr_marker/scale: 1.0
+    viz/corr_marker/line_width: 0.03
+    viz/corr_marker/max_segments: 2000
+    viz/corr_marker/lifetime: 0.0
