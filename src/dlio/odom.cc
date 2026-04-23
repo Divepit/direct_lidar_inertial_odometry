@@ -166,12 +166,12 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->reset_srv_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   this->reset_srv_ = this->create_service<std_srvs::srv::Trigger>(
-      "/dlio/reset",
+      "dlio/reset",
       std::bind(&dlio::OdomNode::resetService, this, std::placeholders::_1, std::placeholders::_2),
       rclcpp::ServicesQoS(),
       this->reset_srv_cb_group_);
 
-  this->map_reset_client_ = this->create_client<std_srvs::srv::Trigger>("/dlio/reset_map");
+  this->map_reset_client_ = this->create_client<std_srvs::srv::Trigger>("dlio/reset_map");
 
   this->odom_pub     = this->create_publisher<nav_msgs::msg::Odometry>("odom", 1);
   this->pose_pub     = this->create_publisher<geometry_msgs::msg::PoseStamped>("pose", 1);
@@ -527,7 +527,7 @@ void dlio::OdomNode::requestMapReset(const std::string& origin) {
 
   if (!this->map_reset_client_->service_is_ready()) {
     RCLCPP_WARN(this->get_logger(),
-                "[RESET:%s] /dlio/reset_map service not ready — map was NOT cleared.",
+                "[RESET:%s] dlio/reset_map service not ready — map was NOT cleared.",
                 origin.c_str());
     return;
   }
