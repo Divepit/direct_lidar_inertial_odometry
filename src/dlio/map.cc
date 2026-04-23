@@ -102,7 +102,7 @@ dlio::MapNode::MapNode() : Node("dlio_map_node") {
   // ResetMap service
   reset_map_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   reset_map_srv_ = this->create_service<std_srvs::srv::Trigger>(
-      "reset_map",
+      "dlio/reset_map",
       std::bind(&dlio::MapNode::resetMap, this, std::placeholders::_1, std::placeholders::_2),
       rclcpp::ServicesQoS(),
       reset_map_cb_group_);
