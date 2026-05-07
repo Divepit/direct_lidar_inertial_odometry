@@ -168,7 +168,7 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->reset_srv_ = this->create_service<std_srvs::srv::Trigger>(
       "dlio/reset",
       std::bind(&dlio::OdomNode::resetService, this, std::placeholders::_1, std::placeholders::_2),
-      rclcpp::ServicesQoS(),
+      rmw_qos_profile_services_default,
       this->reset_srv_cb_group_);
 
   this->map_reset_client_ = this->create_client<std_srvs::srv::Trigger>("dlio/reset_map");

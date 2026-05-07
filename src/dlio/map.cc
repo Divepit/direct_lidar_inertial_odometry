@@ -96,7 +96,7 @@ dlio::MapNode::MapNode() : Node("dlio_map_node") {
   save_pcd_srv = this->create_service<direct_lidar_inertial_odometry::srv::SavePCD>(
       "save_pcd",
       std::bind(&dlio::MapNode::savePCD, this, std::placeholders::_1, std::placeholders::_2),
-      rclcpp::ServicesQoS(),
+      rmw_qos_profile_services_default,
       save_pcd_cb_group);
 
   // ResetMap service
@@ -104,7 +104,7 @@ dlio::MapNode::MapNode() : Node("dlio_map_node") {
   reset_map_srv_ = this->create_service<std_srvs::srv::Trigger>(
       "dlio/reset_map",
       std::bind(&dlio::MapNode::resetMap, this, std::placeholders::_1, std::placeholders::_2),
-      rclcpp::ServicesQoS(),
+      rmw_qos_profile_services_default,
       reset_map_cb_group_);
 
   pcl::console::setVerbosityLevel(pcl::console::L_ERROR);
