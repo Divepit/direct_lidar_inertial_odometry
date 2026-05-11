@@ -1,7 +1,7 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -9,15 +9,27 @@ def generate_launch_description():
     current_pkg = FindPackageShare('direct_lidar_inertial_odometry')
 
     # Args
-    rviz = LaunchConfiguration('rviz', default='false')
-    pointcloud_topic = LaunchConfiguration('pointcloud_topic', default='/lidar/point_cloud')
-    imu_topic = LaunchConfiguration('imu_topic', default='/imu_sensor_broadcaster/imu')
-    use_sim_time = LaunchConfiguration('use_sim_time', default='false')
+    rviz = LaunchConfiguration('rviz')
+    pointcloud_topic = LaunchConfiguration('pointcloud_topic')
+    imu_topic = LaunchConfiguration('imu_topic')
+    use_sim_time = LaunchConfiguration('use_sim_time')
 
-    declare_rviz_arg = DeclareLaunchArgument('rviz', default_value=rviz, description='Launch RViz')
-    declare_pointcloud_topic_arg = DeclareLaunchArgument('pointcloud_topic', default_value=pointcloud_topic, description='Pointcloud topic name')
-    declare_imu_topic_arg = DeclareLaunchArgument('imu_topic', default_value=imu_topic, description='IMU topic name')
-    declare_use_sim_time_arg = DeclareLaunchArgument('use_sim_time', default_value=use_sim_time, description='Use /clock (sim time)')
+    declare_rviz_arg = DeclareLaunchArgument('rviz', default_value='false', description='Launch RViz')
+    declare_pointcloud_topic_arg = DeclareLaunchArgument(
+        'pointcloud_topic',
+        default_value=EnvironmentVariable('DLIO_POINTCLOUD_TOPIC', default_value='/gt_box/livox/lidar'),
+        description='Pointcloud topic name',
+    )
+    declare_imu_topic_arg = DeclareLaunchArgument(
+        'imu_topic',
+        default_value=EnvironmentVariable('DLIO_IMU_TOPIC', default_value='/gt_box/livox/imu_si_compliant'),
+        description='IMU topic name',
+    )
+    declare_use_sim_time_arg = DeclareLaunchArgument(
+        'use_sim_time',
+        default_value=EnvironmentVariable('DLIO_USE_SIM_TIME', default_value='false'),
+        description='Use /clock (sim time)',
+    )
 
     # Params
     dlio_yaml_path = PathJoinSubstitution([current_pkg, 'cfg', 'dlio.yaml'])
