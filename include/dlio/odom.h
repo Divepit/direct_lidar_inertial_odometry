@@ -109,6 +109,8 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
 
   void initializeDLIO();
 
+  void callbackExternalOdom(nav_msgs::msg::Odometry::SharedPtr odom);  // NOLINT(performance-unnecessary-value-param)
+
   bool getNextPose();
   bool imuMeasFromTimeRange(double start_time, double end_time,
                             boost::circular_buffer<ImuMeas>::reverse_iterator& begin_imu_it,  // NOLINT(bugprone-easily-swappable-parameters)
@@ -174,7 +176,8 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   // Subscribers
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr lidar_sub;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
-  rclcpp::CallbackGroup::SharedPtr lidar_cb_group, imu_cb_group, reset_srv_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr lidar_cb_group, imu_cb_group, reset_srv_cb_group_, external_odom_cb_group;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr external_odom_sub;
 
   // Publishers
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub;
@@ -412,6 +415,12 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   };
   Pose lidarPose;
   Pose imuPose;
+
+  // External odometry (replaces IMU for initialization and T_prior in sim mode)
+  Pose externalOdomPose;
+  Pose prevExternalOdomPose;
+  bool first_external_odom_received;
+  std::mutex mtx_external_odom;
 
   // Metrics
   struct Metrics {
