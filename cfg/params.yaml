@@ -12,7 +12,7 @@
 
 /**:
   ros__parameters:
-    use_sim_time: false
+    use_sim_time: true
     frames/odom: dlio_odom
     frames/baselink: base
     frames/lidar: lidar
@@ -26,23 +26,52 @@
     map/crop/box_size: 20.0      # meters (edge length of cube)
     map/crop/padding: 2.0        # meters of extra margin to reduce churn
     map/crop/period_sec: 2.0     # crop the stored map every N seconds
+    map/save_dynamic_removed/enabled: false
 
-    odom/debug/enabled: false
+    # Optional mission-state export from the odometry node. When enabled, the
+    # node overwrites run_stats.csv on startup and writes publication-quality
+    # pose/twist/bias plots on normal shutdown, including ctrl-c shutdown.
+    run_stats/enabled: true
+    # Leave this under /tmp unless a mission-specific artifact directory is desired.
+    run_stats/output_dir: "/tmp/dlio_run_stats"
+    run_stats/overwrite: true
+    run_stats/plot_on_shutdown: true
+    run_stats/plot_dpi: 600
+    run_stats/plot_script: ""
+
+    odom/debug/enabled: true
 
     odom/gravity: 9.80665
     odom/computeTimeOffset: false
+    # OpenMP worker count used by GICP and scan deskewing. Keep this conservative
+    # on live robots to avoid CPU oversubscription and timing jitter.
+    odom/num_threads: 4
 
     odom/imu/approximateGravity: true
     odom/imu/calibration/gyro: true
     odom/imu/calibration/accel: true
     odom/imu/calibration/time: 3.0
     odom/imu/bufferSize: 5000
+    # IMU unit check runs on the raw IMU message before extrinsic transform,
+    # calibration accumulation, gravity alignment, deskew integration, and
+    # propagation. ROS-standard IMUs are expected to report accel in m/s^2 and
+    # gyro in rad/s. Some bags/drivers report accel in g and gyro in deg/s; this
+    # block detects that early and scales the data before DLIO calibration.
+    odom/imu/unit_check/enabled: true
+    odom/imu/unit_check/auto_scale: true
+    odom/imu/unit_check/min_samples: 50
+    odom/imu/unit_check/max_wait_sec: 0.5
+    odom/imu/unit_check/warn_period_sec: 2.0
+    odom/imu/unit_check/assume_deg_per_sec_when_accel_g: true
+    # Positive overrides force scales before calibration. Leave 0.0 for auto.
+    odom/imu/unit_check/accel_scale_override: 0.0
+    odom/imu/unit_check/gyro_scale_override: 0.0
 
-    odom/preprocessing/cropBoxFilter/size: 1.0
+    odom/preprocessing/cropBoxFilter/size: 0.1
     odom/preprocessing/voxelFilter/res: 0.1
 
-    odom/keyframe/threshD: 10.25
-    odom/keyframe/threshR: 10.0
+    odom/keyframe/threshD: 1.25
+    odom/keyframe/threshR: 5.0
 
     odom/submap/keyframe/knn: 10
     odom/submap/keyframe/kcv: 10
@@ -57,12 +86,68 @@
     odom/gicp/rotationEpsilon: 0.001
 
     odom/gicp/initLambdaFactor: 1e-6
-    odom/gicp/degeneracy/enabled: true
+    odom/gicp/degeneracy/enabled: false
     odom/gicp/degeneracy/trans_eig_abs_threshold: 50.0
     odom/gicp/degeneracy/reset_consecutive_count: 10
 
     odom/restart/geometry_gate/enabled: true
     odom/restart/geometry_gate/min_eigenvalue: 100.0
+
+    # Dynamic object filtering. The only backend is the clean-room
+    # M-detector-style online LiDAR filter using ego-motion-compensated
+    # temporal depth maps and object tracking.
+    #
+    # Shared range and memory controls:
+    # - min_range/max_range gate dynamic detection/removal only. Finite points
+    #   outside this range pass through to the clean map unchanged; they are not
+    #   detector candidates and should not appear in dynamic_points.pcd.
+    #   Raise max_range, and local_radius with it, for full-range dynamic detection.
+    # - voxel_size controls map-memory granularity; smaller keeps edges sharper but
+    #   increases memory and can make temporal support more sparse.
+    # - warmup_scans delays confident dynamic decisions until enough temporal context
+    #   exists.
+    dynamic_filter/enabled: true
+    # Build and publish removed-point clouds only when dynamic_removed has a subscriber.
+    # Set true for deterministic dynamic_points.pcd generation if subscriber discovery is a concern.
+    dynamic_filter/force_removed_cloud_output: false
+    dynamic_filter/voxel_size: 0.20
+    dynamic_filter/min_range: 1.0
+    dynamic_filter/max_range: 10.0
+    dynamic_filter/warmup_scans: 5
+    dynamic_filter/static_score_threshold: 2
+    dynamic_filter/static_window_scans: 5
+    dynamic_filter/max_age_scans: 300
+    dynamic_filter/local_radius: 30.0  # keep >= max_range; larger preserves farther voxel history
+    # M-detector backend tuning.
+    # Projection: JT-128 uses ring as row and actual yaw from corrected xyz as column;
+    # never use raw packet column as azimuth.
+    dynamic_filter/m_detector/projection/rows: 128
+    dynamic_filter/m_detector/projection/cols: 900
+    dynamic_filter/m_detector/projection/use_ring_field: true
+    dynamic_filter/m_detector/projection/use_point_timestamp: true
+    # Temporal history: longer/more frames are more robust but slower to react;
+    # increasing min_history_votes is more static-preserving.
+    dynamic_filter/m_detector/history_duration: 0.5
+    dynamic_filter/m_detector/max_history_frames: 5
+    dynamic_filter/m_detector/frame_duration: 0.1
+    dynamic_filter/m_detector/min_history_votes: 3
+    # Depth-event sensitivity: larger margins reduce false positives on walls,
+    # floors, and edges; smaller margins are more aggressive.
+    dynamic_filter/m_detector/case_depth_margin: 0.15
+    dynamic_filter/m_detector/map_consistency_depth: 0.25
+    # Cluster filtering: larger minimums and smaller max extent preserve static
+    # structure; lower minimums are more aggressive on sparse objects.
+    dynamic_filter/m_detector/min_cluster_points: 60
+    dynamic_filter/m_detector/min_track_cluster_points: 120
+    dynamic_filter/m_detector/max_cluster_extent: 3.0
+    # Tracking: larger association/TTL keeps objects longer but can over-mask
+    # static areas; higher confirm hits is more conservative.
+    dynamic_filter/m_detector/max_assoc_distance: 0.9
+    dynamic_filter/m_detector/track_confirm_hits: 2
+    dynamic_filter/m_detector/track_ttl_scans: 20
+    # Static veto: lower values are more static-preserving; higher values allow
+    # more dynamic labels near previously stable structure.
+    dynamic_filter/m_detector/static_veto_ratio: 0.25
 
     # Aggressive (wn=3.0, zeta=0.85): Kp=5.1, Kv=9.0, Kq=12.0, Kab=3.0, Kgb=1.5
     odom/geo/Kp: 5.1

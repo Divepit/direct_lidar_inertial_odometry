@@ -28,30 +28,49 @@ def rviz_environment():
 def generate_launch_description():
     current_pkg = FindPackageShare('direct_lidar_inertial_odometry')
 
-    # Args
+    output_dir_default = '/tmp/dlio_run_stats'
+    output_dir = LaunchConfiguration('output_dir')
     rviz = LaunchConfiguration('rviz')
-    pointcloud_topic = LaunchConfiguration('pointcloud_topic')
-    imu_topic = LaunchConfiguration('imu_topic')
-    use_sim_time = LaunchConfiguration('use_sim_time')
 
-    declare_rviz_arg = DeclareLaunchArgument('rviz', default_value='true', description='Launch RViz')
-    declare_pointcloud_topic_arg = DeclareLaunchArgument('pointcloud_topic', default_value='/lidar_points', description='Pointcloud topic name')
-    declare_imu_topic_arg = DeclareLaunchArgument('imu_topic', default_value='/lidar_imu', description='IMU topic name')
-    declare_use_sim_time_arg = DeclareLaunchArgument('use_sim_time', default_value='false', description='Use /clock (sim time)')
-
-    # Params
     dlio_yaml_path = PathJoinSubstitution([current_pkg, 'cfg', 'dlio.yaml'])
     dlio_params_yaml_path = PathJoinSubstitution([current_pkg, 'cfg', 'params.yaml'])
+    rviz_config_path = PathJoinSubstitution([current_pkg, 'launch', 'a2_front.rviz'])
 
-    # Nodes
-    dlio_odom_node = Node(
+    odom_node = Node(
         package='direct_lidar_inertial_odometry',
         executable='dlio_odom_node',
         output='screen',
-        parameters=[dlio_yaml_path, dlio_params_yaml_path, {'use_sim_time': use_sim_time}],
+        parameters=[
+            dlio_yaml_path,
+            dlio_params_yaml_path,
+            {
+                'use_sim_time': True,
+                'dynamic_filter/enabled': True,
+                'dynamic_filter/max_range': 10.0,
+                'dynamic_filter/warmup_scans': 10,
+                'dynamic_filter/static_window_scans': 8,
+                'dynamic_filter/force_removed_cloud_output': True,
+                'dynamic_filter/m_detector/min_history_votes': 4,
+                'dynamic_filter/m_detector/case_depth_margin': 0.25,
+                'dynamic_filter/m_detector/map_consistency_depth': 0.40,
+                'dynamic_filter/m_detector/min_cluster_points': 120,
+                'dynamic_filter/m_detector/min_track_cluster_points': 240,
+                'dynamic_filter/m_detector/max_cluster_extent': 2.2,
+                'dynamic_filter/m_detector/max_assoc_distance': 0.6,
+                'dynamic_filter/m_detector/track_confirm_hits': 3,
+                'dynamic_filter/m_detector/track_ttl_scans': 8,
+                'dynamic_filter/m_detector/static_veto_ratio': 0.10,
+                'map/crop/enabled': False,
+                'run_stats/enabled': True,
+                'run_stats/output_dir': output_dir,
+                'run_stats/overwrite': True,
+                'run_stats/plot_on_shutdown': True,
+                'run_stats/plot_dpi': 600,
+            },
+        ],
         remappings=[
-            ('pointcloud', pointcloud_topic),
-            ('imu', imu_topic),
+            ('pointcloud', '/front_lidar/points'),
+            ('imu', '/front_lidar/imu'),
             ('map_pose', 'dlio/odom_node/map_pose'),
             ('map_pose_inverted', 'dlio/odom_node/map_pose_inverted'),
             ('odom', 'dlio/odom_node/odom'),
@@ -70,41 +89,52 @@ def generate_launch_description():
             ('markers/correction', 'dlio/odom_node/markers/correction'),
             ('markers/degeneracy_directions', 'dlio/odom_node/markers/degeneracy_directions'),
         ],
-        respawn=True,
+        respawn=False,
     )
 
-    # DLIO Mapping Node
-    dlio_map_node = Node(
+    map_node = Node(
         package='direct_lidar_inertial_odometry',
         executable='dlio_map_node',
         output='screen',
-        parameters=[dlio_yaml_path, dlio_params_yaml_path, {'use_sim_time': use_sim_time}],
+        parameters=[
+            dlio_yaml_path,
+            dlio_params_yaml_path,
+            {
+                'use_sim_time': True,
+                'map/crop/enabled': False,
+                'map/save_dynamic_removed/enabled': True,
+            },
+        ],
         remappings=[
             ('kf_cloud', 'dlio/odom_node/pointcloud/keyframe'),
+            ('map', 'dlio/map_node/map'),
             ('map_pose', 'dlio/odom_node/map_pose'),
             ('dynamic_removed', 'dlio/odom_node/pointcloud/dynamic_removed'),
         ],
-        respawn=True,
+        respawn=False,
     )
 
-    rviz_config_path = PathJoinSubstitution([current_pkg, 'launch', 'dlio.rviz'])
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
-        name='dlio_rviz',
+        name='dlio_a2_front_rviz',
         arguments=['-d', rviz_config_path],
         output='screen',
-        condition=IfCondition(LaunchConfiguration('rviz')),
-        parameters=[{'use_sim_time': use_sim_time}],
+        condition=IfCondition(rviz),
+        parameters=[{'use_sim_time': True}],
         additional_env=rviz_environment(),
     )
 
     return LaunchDescription([
-        declare_rviz_arg,
-        declare_pointcloud_topic_arg,
-        declare_imu_topic_arg,
-        declare_use_sim_time_arg,
-        dlio_odom_node,
-        dlio_map_node,
-        rviz_node
+        DeclareLaunchArgument(
+            'rviz',
+            default_value='true',
+            description='Start RViz2 with the A2 front-lidar DLIO display config.'),
+        DeclareLaunchArgument(
+            'output_dir',
+            default_value=output_dir_default,
+            description='Directory overwritten by run_stats and used by /save_pcd. Defaults under /tmp.'),
+        odom_node,
+        map_node,
+        rviz_node,
     ])

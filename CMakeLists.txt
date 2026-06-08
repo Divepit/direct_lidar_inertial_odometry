@@ -39,17 +39,69 @@ find_package(nav_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 
 find_package(PCL REQUIRED)
 find_package(Eigen3 REQUIRED )
-find_package(Threads REQUIRED)
 
-add_compile_options(-std=c++17 -O3 -mtune=native -march=native -fopenmp -DNDEBUG) #-funsafe-math-optimizations -funsafe-loop-optimizations
 set(CMAKE_BUILD_TYPE "Release")
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+find_package(Threads REQUIRED)
+
+add_library(dlio_openmp INTERFACE)
+target_link_libraries(dlio_openmp INTERFACE Threads::Threads)
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  execute_process(
+    COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=libgomp.so
+    OUTPUT_VARIABLE DLIO_GOMP_LIBRARY_FROM_COMPILER
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+
+  if(DLIO_GOMP_LIBRARY_FROM_COMPILER
+      AND NOT DLIO_GOMP_LIBRARY_FROM_COMPILER STREQUAL "libgomp.so"
+      AND EXISTS "${DLIO_GOMP_LIBRARY_FROM_COMPILER}")
+    get_filename_component(DLIO_GOMP_LIBRARY "${DLIO_GOMP_LIBRARY_FROM_COMPILER}" REALPATH)
+  else()
+    find_library(DLIO_GOMP_LIBRARY NAMES gomp)
+  endif()
+
+  if(NOT DLIO_GOMP_LIBRARY)
+    message(FATAL_ERROR "libgomp was not found. Install libgomp or build direct_lidar_inertial_odometry with GCC.")
+  endif()
+
+  include(CheckCXXSourceCompiles)
+  set(CMAKE_REQUIRED_FLAGS_SAVE "${CMAKE_REQUIRED_FLAGS}")
+  set(CMAKE_REQUIRED_LIBRARIES_SAVE "${CMAKE_REQUIRED_LIBRARIES}")
+  set(CMAKE_REQUIRED_FLAGS "-pthread -fopenmp=libgomp")
+  set(CMAKE_REQUIRED_LIBRARIES "${DLIO_GOMP_LIBRARY}")
+  check_cxx_source_compiles(
+    "#include <omp.h>
+     int main() { return omp_get_max_threads() > 0 ? 0 : 1; }"
+    DLIO_CLANG_LIBGOMP_OPENMP_WORKS)
+  set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS_SAVE}")
+  set(CMAKE_REQUIRED_LIBRARIES "${CMAKE_REQUIRED_LIBRARIES_SAVE}")
+
+  if(NOT DLIO_CLANG_LIBGOMP_OPENMP_WORKS)
+    message(FATAL_ERROR "Clang could not compile/link OpenMP with libgomp. Check that clang can use GCC's OpenMP headers and libgomp.")
+  endif()
+
+  # Use GNU OpenMP with Clang to avoid the Eigen/libomp conflict seen in this package.
+  target_compile_options(dlio_openmp INTERFACE -pthread -fopenmp=libgomp)
+  target_link_libraries(dlio_openmp INTERFACE ${DLIO_GOMP_LIBRARY})
+else()
+  find_package(OpenMP REQUIRED COMPONENTS CXX)
+  target_link_libraries(dlio_openmp INTERFACE OpenMP::OpenMP_CXX)
+endif()
+
+add_compile_options(-O3 -mtune=native -march=native -funroll-loops -DNDEBUG) #-funsafe-math-optimizations -funsafe-loop-optimizations
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options(-fopt-info-vec-optimized)
+endif()
 
 # Not all machines have <cpuid.h> available
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
@@ -80,13 +132,20 @@ add_library(nano_gicp STATIC
   src/nano_gicp/lsq_registration.cc
   src/nano_gicp/nano_gicp.cc
 )
-target_link_libraries(nano_gicp ${PCL_LIBRARIES} ${OpenMP_LIBS} nanoflann)
+target_link_libraries(nano_gicp ${PCL_LIBRARIES} dlio_openmp nanoflann)
 ament_target_dependencies(nano_gicp)
+
+# Dynamic object filter
+add_library(dlio_dynamic_filter STATIC
+  src/dlio/m_detector_filter.cc
+)
+target_link_libraries(dlio_dynamic_filter ${PCL_LIBRARIES})
+ament_target_dependencies(dlio_dynamic_filter)
 
 # Odometry Node
 add_executable(dlio_odom_node src/dlio/odom_node.cc src/dlio/odom.cc)
-target_link_libraries(dlio_odom_node ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp)
-ament_target_dependencies(dlio_odom_node "tf2_ros" "pcl_ros" "nav_msgs" "pcl_conversions" "rclcpp" "sensor_msgs" "geometry_msgs" "visualization_msgs" "std_srvs")
+target_link_libraries(dlio_odom_node ${PCL_LIBRARIES} dlio_openmp nano_gicp dlio_dynamic_filter)
+ament_target_dependencies(dlio_odom_node "tf2_ros" "pcl_ros" "nav_msgs" "pcl_conversions" "rclcpp" "sensor_msgs" "geometry_msgs" "visualization_msgs" "std_srvs" "ament_index_cpp")
 
 # Mapping Node
 add_executable (dlio_map_node src/dlio/map_node.cc src/dlio/map.cc)
@@ -128,26 +187,44 @@ install( TARGETS dlio_odom_node dlio_map_node
 install( DIRECTORY cfg launch
          DESTINATION share/${PROJECT_NAME} 
 )
+install( PROGRAMS scripts/plot_run_stats.py
+         DESTINATION share/${PROJECT_NAME}/scripts
+)
 
-add_compile_options(-std=c++17 -O3 -mtune=native -march=native -funroll-loops -fopenmp -fopt-info-vec-optimized)
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_m_detector_filter
+    test/test_m_detector_filter.cc
+  )
+  target_link_libraries(test_m_detector_filter dlio_dynamic_filter ${PCL_LIBRARIES})
+  target_include_directories(test_m_detector_filter PRIVATE include)
+  target_compile_definitions(test_m_detector_filter PRIVATE DLIO_ENABLE_TEST_ACCESS)
+
+  ament_add_gtest(test_imu_unit_scaler
+    test/test_imu_unit_scaler.cc
+  )
+  target_include_directories(test_imu_unit_scaler PRIVATE include)
+
+  ament_add_gtest(test_scan_time_bounds
+    test/test_scan_time_bounds.cc
+  )
+  target_include_directories(test_scan_time_bounds PRIVATE include)
+  ament_target_dependencies(test_scan_time_bounds sensor_msgs)
+
+  add_test(
+    NAME test_run_stats_plotter
+    COMMAND bash
+            ${CMAKE_CURRENT_SOURCE_DIR}/test/test_run_stats_plotter.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/plot_run_stats.py
+            ${CMAKE_CURRENT_BINARY_DIR}/run_stats_plotter_test
+  )
+endif()
 
 link_directories(${PCL_LIBRARY_DIRS})
-
-include(FindOpenMP)
-if(OPENMP_FOUND)
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
-else(OPENMP_FOUND)
-  message("ERROR: OpenMP could not be found.")
-endif(OPENMP_FOUND)
 file(WRITE ${CMAKE_BINARY_DIR}/test_cpuid.cpp "#include <cpuid.h>")
 try_compile(HAS_CPUID ${CMAKE_BINARY_DIR} ${CMAKE_BINARY_DIR}/test_cpuid.cpp)
 file(REMOVE ${CMAKE_BINARY_DIR}/test_cpuid.cpp)
 if(HAS_CPUID)
   add_compile_definitions(HAS_CPUID)
 endif()
-
-target_compile_options(dlio_odom_node PRIVATE ${OpenMP_FLAGS})
-
-target_compile_options(dlio_map_node PRIVATE ${OpenMP_FLAGS})

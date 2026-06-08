@@ -28,6 +28,7 @@
 
 #include <mutex>
 #include <chrono>
+#include <fstream>
 
 class dlio::MapNode: public rclcpp::Node {
 
@@ -43,6 +44,7 @@ private:
   bool shouldStop();
 
   void callbackKeyframe(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& keyframe);
+  void callbackDynamicRemoved(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& removed);
   void doPeriodicCrop();
 
   void savePCD(std::shared_ptr<direct_lidar_inertial_odometry::srv::SavePCD::Request> req,  // NOLINT(performance-unnecessary-value-param)
@@ -52,6 +54,7 @@ private:
   void callbackMapPose(const nav_msgs::msg::Odometry::ConstSharedPtr& odom);
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr keyframe_sub;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr dynamic_removed_sub_;
   rclcpp::CallbackGroup::SharedPtr keyframe_cb_group, save_pcd_cb_group;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub;
 
@@ -61,13 +64,18 @@ private:
 
   // Map storage & filtering
   pcl::PointCloud<PointType>::Ptr dlio_map{new pcl::PointCloud<PointType>()};
+  pcl::PointCloud<PointType>::Ptr dynamic_removed_map_{new pcl::PointCloud<PointType>()};
   pcl::PointCloud<PointType>::Ptr crop_buf_{new pcl::PointCloud<PointType>()};
   std::mutex map_mtx_;
+  std::mutex dynamic_removed_mtx_;
   std::mutex pose_mtx_;
   pcl::VoxelGrid<PointType> voxelgrid;
 
   std::string odom_frame;
   double leaf_size_;
+  bool save_dynamic_removed_enabled_{false};
+  std::size_t dynamic_removed_topic_count_{0};
+  std::size_t dynamic_removed_raw_count_{0};
 
   // Cropping controls
   bool   crop_enabled_{false};

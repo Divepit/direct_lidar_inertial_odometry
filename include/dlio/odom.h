@@ -11,6 +11,8 @@
  ***********************************************************/
 
 #include "dlio/dlio.h"
+#include "dlio/imu_unit_scaler.h"
+#include "dlio/m_detector_filter.h"
 
 // ROS
 #include "rclcpp/rclcpp.hpp"
@@ -47,6 +49,8 @@
 #include <array>
 #include <condition_variable>
 #include <deque>
+#include <fstream>
+#include <limits>
 
 class dlio::OdomNode: public rclcpp::Node {
 
@@ -65,6 +69,9 @@ private:
   struct InitialImuBaseline;
 
   void getParams();
+  void loadRunStatsParams();
+  void loadDynamicFilterCommonParams();
+  void loadMDetectorFilterParams();
 
   void callbackPointCloud(sensor_msgs::msg::PointCloud2::SharedPtr pc);  // NOLINT(performance-unnecessary-value-param)
   void processPointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& pc);
@@ -98,14 +105,17 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
                   const Eigen::Ref<const Eigen::Matrix4f>& T_map_odom,
                   const rclcpp::Time& cloud_stamp);
                   
-  void publishKeyframe(std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
-                       pcl::PointCloud<PointType>::ConstPtr> kf, rclcpp::Time timestamp);
+  struct KeyframeData;
+  void publishKeyframe(const KeyframeData& kf);
 
   void getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedPtr& pc);
   void preprocessPoints();
   void deskewPointcloud();
   void initializeInputTarget();
   void setInputSource();
+  void applyDynamicFilterBeforeRegistration();
+  void updateDynamicFilterAfterCorrection();
+  void publishDynamicRemovedCloud();
 
   void initializeDLIO();
 
@@ -134,7 +144,9 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   void computeDensity();
   void computeMotionDeviation();
 
+  sensor_msgs::msg::Imu::SharedPtr scaleImuUnitsBeforeTransform(const sensor_msgs::msg::Imu::SharedPtr& imu);
   sensor_msgs::msg::Imu::SharedPtr transformImu(const sensor_msgs::msg::Imu::SharedPtr& imu);
+  void maybePrintImuUnitScaleWarning(double stamp_sec);
 
   void updateKeyframes();
   void computeConvexHull();
@@ -167,6 +179,16 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
                               const Eigen::Vector3f& corr_vec_m,
                               visualization_msgs::msg::Marker& out);
 
+  void initializeRunStats();
+  void recordRunStats(double stamp_sec,
+                      const Eigen::Ref<const Eigen::Matrix4f>& T_map_base,
+                      const Eigen::Vector3f& vlin_b,
+                      const Eigen::Vector3f& vang_b,
+                      const Eigen::Vector3f& accel_bias,
+                      const Eigen::Vector3f& gyro_bias);
+  void closeRunStats();
+  void generateRunStatsPlots();
+
   void debug();
 
   rclcpp::TimerBase::SharedPtr publish_timer;
@@ -187,6 +209,7 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_not_transformed_pub;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_map_pub;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr dynamic_removed_pub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_map_pub;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_baselink_pub;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_srv_;
@@ -240,12 +263,19 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
 
   std::size_t kMaxKeyframes = 30;
 
+  struct KeyframeData {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    Eigen::Vector3f position = Eigen::Vector3f::Zero();
+    Eigen::Quaternionf orientation = Eigen::Quaternionf::Identity();
+    pcl::PointCloud<PointType>::ConstPtr registration_cloud;
+    pcl::PointCloud<PointType>::ConstPtr mapping_cloud;
+    std::shared_ptr<const nano_gicp::CovarianceList> covariances;
+    rclcpp::Time timestamp;
+    Eigen::Matrix4f transform = Eigen::Matrix4f::Identity();
+  };
+
   // Keyframes
-  std::vector<std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>,
-                        pcl::PointCloud<PointType>::ConstPtr>> keyframes;
-  std::vector<rclcpp::Time> keyframe_timestamps;
-  std::vector<std::shared_ptr<const nano_gicp::CovarianceList>> keyframe_normals;
-  std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>> keyframe_transformations;
+  std::vector<KeyframeData, Eigen::aligned_allocator<KeyframeData>> keyframes;
   std::mutex keyframes_mutex;
 
   // Sensor Type
@@ -265,9 +295,11 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   pcl::PointCloud<PointType>::ConstPtr original_scan;
   pcl::PointCloud<PointType>::ConstPtr deskewed_scan;
   pcl::PointCloud<PointType>::ConstPtr current_scan;
+  pcl::PointCloud<PointType>::ConstPtr registration_scan;
+  pcl::PointCloud<PointType>::ConstPtr keyframe_mapping_scan;
+  pcl::PointCloud<PointType>::Ptr dynamic_removed_cloud_;
 
   // Keyframes
-  pcl::PointCloud<PointType>::ConstPtr keyframe_cloud;
   int num_processed_keyframes;
 
   pcl::ConvexHull<PointType> convex_hull;
@@ -359,6 +391,12 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   bool imu_transform_prev_valid_ = false;
   Eigen::Vector3f imu_transform_ang_vel_prev_ = Eigen::Vector3f::Zero();
 
+  // Process-level IMU unit detector. It intentionally survives DLIO resets so
+  // calibration, deskew, and propagation keep using the same unit convention.
+  dlio::ImuUnitScaler imu_unit_scaler_;
+  dlio::ImuUnitScaleConfig imu_unit_scale_config_;
+  double imu_unit_scale_last_warn_stamp_ = -std::numeric_limits<double>::infinity();
+
   static bool comparatorImu(const ImuMeas& m1, const ImuMeas& m2) {
     return (m1.stamp < m2.stamp);
   };
@@ -443,7 +481,7 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
 
   // Parameters
   std::string version_;
-  int num_threads_;
+  int num_threads_ = 4;
 
   bool debug_enabled_;
 
@@ -540,6 +578,24 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   bool degen_prev_dirs_initialized_ = false;
   std::array<Eigen::Vector3d, 3> degen_prev_trans_dirs_map_;
 
+  MDetectorFilter::Config m_detector_filter_config_;
+  MDetectorFilter m_detector_filter_;
+  MDetectorFilter::Stats m_detector_filter_stats_;
+  bool dynamic_filter_force_removed_cloud_output_ = false;
+
+  bool run_stats_enabled_ = false;
+  bool run_stats_overwrite_ = true;
+  bool run_stats_plot_on_shutdown_ = false;
+  int run_stats_plot_dpi_ = 600;
+  std::string run_stats_output_dir_;
+  std::string run_stats_plot_script_;
+  std::ofstream run_stats_csv_;
+  std::mutex run_stats_mtx_;
+  bool run_stats_have_first_stamp_ = false;
+  bool run_stats_plot_generated_ = false;
+  double run_stats_first_stamp_ = 0.0;
+  std::size_t run_stats_rows_ = 0U;
+
 
 struct PubJob {
   Eigen::Matrix4f T_cloud;
@@ -581,6 +637,8 @@ struct PubJob {
 
   void pointCloudWorkerLoop();
   void enqueuePointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& pc);
+  std::size_t clearPointCloudQueue(const std::string& reason, bool log_if_dropped = true);
+  bool imuBufferCoversRange(double start_time, double end_time);
 
   void workerLoop();
   void enqueuePublish(pcl::PointCloud<PointType>::ConstPtr cloud,

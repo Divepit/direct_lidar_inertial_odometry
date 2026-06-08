@@ -13,6 +13,17 @@
 #include "dlio/map.h"
 #include "dlio/utils.h"
 
+namespace {
+
+template <typename PublisherPtrT>
+bool hasSubscribers(const PublisherPtrT& pub) {
+  return pub &&
+         (pub->get_subscription_count() > 0 ||
+          pub->get_intra_process_subscription_count() > 0);
+}
+
+}  // namespace
+
 dlio::MapNode::MapNode() : Node("dlio_map_node") {
   this->getParams();
 
@@ -24,6 +35,17 @@ dlio::MapNode::MapNode() : Node("dlio_map_node") {
           .durability(RMW_QOS_POLICY_DURABILITY_VOLATILE)
           .history(RMW_QOS_POLICY_HISTORY_KEEP_LAST),
       std::bind(&dlio::MapNode::callbackKeyframe, this, std::placeholders::_1));
+
+  if (save_dynamic_removed_enabled_) {
+    auto removed_qos = rclcpp::QoS(100)
+                           .reliability(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT)
+                           .durability(RMW_QOS_POLICY_DURABILITY_VOLATILE)
+                           .history(RMW_QOS_POLICY_HISTORY_KEEP_LAST);
+    this->dynamic_removed_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+        "dynamic_removed",
+        removed_qos,
+        std::bind(&dlio::MapNode::callbackDynamicRemoved, this, std::placeholders::_1));
+  }
 
   this->map_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>("map", 100);
 
@@ -146,6 +168,7 @@ void dlio::MapNode::getParams() {
   this->declare_parameter<double>("map/crop/box_size", 30.0);
   this->declare_parameter<double>("map/crop/period_sec", 2.0);
   this->declare_parameter<double>("map/crop/padding", 0.0);
+  this->declare_parameter<bool>("map/save_dynamic_removed/enabled", false);
 
   this->get_parameter("frames/odom", this->odom_frame);
   this->get_parameter("map/sparse/leafSize", this->leaf_size_);
@@ -154,6 +177,7 @@ void dlio::MapNode::getParams() {
   this->get_parameter("map/crop/box_size", this->crop_box_size_);
   this->get_parameter("map/crop/period_sec", this->crop_period_sec_);
   this->get_parameter("map/crop/padding", this->crop_padding_);
+  this->get_parameter("map/save_dynamic_removed/enabled", this->save_dynamic_removed_enabled_);
 }
 
 void dlio::MapNode::start() {}
@@ -204,7 +228,7 @@ void dlio::MapNode::callbackKeyframe(const sensor_msgs::msg::PointCloud2::ConstS
       static_cast<decltype(this->dlio_map->points.size())>(this->dlio_map->width) *
       static_cast<decltype(this->dlio_map->points.size())>(this->dlio_map->height);
   if (this->dlio_map->points.size() == organized_point_count) {
-    if (this->map_pub->get_subscription_count() > 0) {
+    if (hasSubscribers(this->map_pub)) {
       // Snapshot pose flags and map ptr
       Eigen::Vector3f pose;
       bool have_pose = false;
@@ -241,6 +265,27 @@ void dlio::MapNode::callbackKeyframe(const sensor_msgs::msg::PointCloud2::ConstS
       this->map_pub->publish(map_ros);
     }
   }
+}
+
+void dlio::MapNode::callbackDynamicRemoved(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr &removed) {
+  if (this->shouldStop() || !save_dynamic_removed_enabled_) {
+    return;
+  }
+  if (!removed || removed->width == 0U || removed->height == 0U || removed->data.empty()) {
+    return;
+  }
+
+  pcl::PointCloud<PointType>::Ptr removed_pcl(new pcl::PointCloud<PointType>());
+  pcl::fromROSMsg(*removed, *removed_pcl);
+  if (removed_pcl->empty()) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lk(dynamic_removed_mtx_);
+  ++dynamic_removed_topic_count_;
+  dynamic_removed_raw_count_ += removed_pcl->size();
+  *dynamic_removed_map_ += *removed_pcl;
 }
 
 void dlio::MapNode::doPeriodicCrop() {
@@ -288,11 +333,14 @@ void dlio::MapNode::resetMap(std::shared_ptr<std_srvs::srv::Trigger::Request> /*
     return;
   }
 
-  // Acquire both mutexes together (always map → pose order to prevent deadlock)
-  std::scoped_lock map_pose_lock(map_mtx_, pose_mtx_);
+  // Acquire mutexes together to prevent reset/save/callback races.
+  std::scoped_lock map_pose_lock(map_mtx_, pose_mtx_, dynamic_removed_mtx_);
 
   // Clear the accumulated map
   dlio_map = std::make_shared<pcl::PointCloud<PointType>>();
+  dynamic_removed_map_ = std::make_shared<pcl::PointCloud<PointType>>();
+  dynamic_removed_topic_count_ = 0U;
+  dynamic_removed_raw_count_ = 0U;
 
   // Reset pose tracking
   have_pose_ = false;
@@ -323,9 +371,18 @@ void dlio::MapNode::resetMap(std::shared_ptr<std_srvs::srv::Trigger::Request> /*
 void dlio::MapNode::savePCD(std::shared_ptr<direct_lidar_inertial_odometry::srv::SavePCD::Request> req,  // NOLINT(performance-unnecessary-value-param)
                             std::shared_ptr<direct_lidar_inertial_odometry::srv::SavePCD::Response> res) {  // NOLINT(performance-unnecessary-value-param)
   pcl::PointCloud<PointType>::Ptr map_cloud(new pcl::PointCloud<PointType>());
+  pcl::PointCloud<PointType>::Ptr removed_cloud(new pcl::PointCloud<PointType>());
+  std::size_t removed_topic_count = 0U;
+  std::size_t removed_raw_count = 0U;
   {
     std::lock_guard<std::mutex> map_lock(map_mtx_);
     *map_cloud = *this->dlio_map;  // copy under lock
+  }
+  {
+    std::lock_guard<std::mutex> removed_lock(dynamic_removed_mtx_);
+    *removed_cloud = *this->dynamic_removed_map_;
+    removed_topic_count = dynamic_removed_topic_count_;
+    removed_raw_count = dynamic_removed_raw_count_;
   }
 
   float leaf_size = req->leaf_size;
@@ -335,13 +392,57 @@ void dlio::MapNode::savePCD(std::shared_ptr<direct_lidar_inertial_odometry::srv:
             << " with leaf size " << to_string_with_precision(leaf_size, 2) << "... ";
   std::cout.flush();
 
+  const std::size_t map_raw_count = map_cloud->size();
   pcl::VoxelGrid<PointType> voxel_grid;
   voxel_grid.setLeafSize(leaf_size, leaf_size, leaf_size);
   voxel_grid.setInputCloud(map_cloud);
   voxel_grid.filter(*map_cloud);
 
   int ret = pcl::io::savePCDFileBinary(save_path + "/dlio_map.pcd", *map_cloud);
-  res->success = (ret == 0);
+  const int clean_alias_ret =
+      pcl::io::savePCDFileBinary(save_path + "/clean_map.pcd", *map_cloud);
+  if (ret == 0 && clean_alias_ret != 0) {
+    ret = clean_alias_ret;
+  }
+  const std::size_t map_voxel_count = map_cloud->size();
+  int removed_ret = 0;
+
+  std::size_t removed_voxel_count = removed_cloud->size();
+  if (save_dynamic_removed_enabled_) {
+    if (!removed_cloud->empty()) {
+      pcl::VoxelGrid<PointType> removed_voxel_grid;
+      removed_voxel_grid.setLeafSize(leaf_size, leaf_size, leaf_size);
+      removed_voxel_grid.setInputCloud(removed_cloud);
+      removed_voxel_grid.filter(*removed_cloud);
+      removed_voxel_count = removed_cloud->size();
+    }
+    removed_ret =
+        pcl::io::savePCDFileBinary(save_path + "/dlio_dynamic_removed_map.pcd", *removed_cloud);
+    if (removed_ret == 0) {
+      removed_ret =
+          pcl::io::savePCDFileBinary(save_path + "/dynamic_points.pcd", *removed_cloud);
+    }
+  }
+
+  {
+    std::ofstream summary(save_path + "/save_summary.txt");
+    if (summary) {
+      summary << "leaf_size=" << leaf_size << '\n'
+              << "clean_map_alias=clean_map.pcd\n"
+              << "map_raw_points=" << map_raw_count << '\n'
+              << "map_voxel_points=" << map_voxel_count << '\n'
+              << "dynamic_removed_enabled=" << (save_dynamic_removed_enabled_ ? "true" : "false") << '\n'
+              << "dynamic_removed_topics=" << removed_topic_count << '\n'
+              << "dynamic_removed_alias="
+              << (save_dynamic_removed_enabled_ ? "dynamic_points.pcd" : "") << '\n'
+              << "dynamic_removed_raw_points=" << removed_raw_count << '\n'
+              << "dynamic_removed_voxel_points=" << removed_voxel_count << '\n';
+    }
+  }
+
+  res->success = (ret == 0) &&
+                 (!save_dynamic_removed_enabled_ ||
+                  removed_ret == 0);
 
   if (res->success) {
     std::cout << "done\n";

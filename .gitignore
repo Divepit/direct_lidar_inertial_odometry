@@ -1,3 +1,26 @@
 *__pycache__/
 .vscode
 log
+
+# ROS/colcon runtime/build outputs
+build/
+install/
+log/
+
+# Local bag/data artifacts
+*.mcap
+*.bag
+*.db3
+*.pcd
+*.ply
+
+# Runtime validation artifacts
+validation_outputs/
+
+# Runtime logs/stat outputs
+*.log
+run_stats.csv
+run_stats_summary.txt
+
+# Bag metadata accidentally produced in repo root
+/metadata.yaml
