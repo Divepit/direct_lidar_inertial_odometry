@@ -399,7 +399,7 @@ void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published
   transformStamped.transform.rotation.y = this->state.q.y();
   transformStamped.transform.rotation.z = this->state.q.z();
 
-  // br.sendTransform(transformStamped);
+  br.sendTransform(transformStamped);
 
   // transform: baselink to imu
   transformStamped.header.stamp = this->imu_stamp;
@@ -416,7 +416,7 @@ void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published
   transformStamped.transform.rotation.y = q.y();
   transformStamped.transform.rotation.z = q.z();
 
-  // br.sendTransform(transformStamped);
+  br.sendTransform(transformStamped);
 
   // transform: baselink to lidar
   transformStamped.header.stamp = this->imu_stamp;
@@ -433,7 +433,7 @@ void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published
   transformStamped.transform.rotation.y = qq.y();
   transformStamped.transform.rotation.z = qq.z();
 
-  // br.sendTransform(transformStamped);
+  br.sendTransform(transformStamped);
 
 }
 
