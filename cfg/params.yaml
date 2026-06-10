@@ -19,7 +19,7 @@ dlio:
     imu: imu
 
   map:
-    waitUntilMove: true
+    waitUntilMove: false
     dense:
       filtered: false
     sparse:
