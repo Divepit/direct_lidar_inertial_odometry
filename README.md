@@ -14,11 +14,96 @@ DLIO is a new lightweight LiDAR-inertial odometry algorithm with a novel coarse-
 This branch is a ROS 2 DLIO pipeline with several additions on top of the original odometry core:
 
 - ROS 2 launch files for generic DLIO and an A2 front-lidar setup.
+- A one-command `replay.launch.py` that plays a hardcoded MCAP (sim clock + RViz) and auto-saves the map and run-state plots when the bag ends.
 - Online LiDAR-only dynamic object filtering with a clean-room M-detector-style backend.
 - Dynamic-removed point accumulation in the map node for saving `dynamic_points.pcd`.
 - Automatic run-state CSV export and plot generation for pose, twist, and estimated IMU biases.
 - Early IMU unit detection and auto-scaling before DLIO calibration. This handles IMUs that publish acceleration in `g` and angular velocity in `deg/s` instead of ROS-standard `m/s^2` and `rad/s`.
 - RViz launch environment fixes for common container/X11 DBus and Qt issues.
+
+## Getting Started (Step By Step)
+
+New to ROS 2 or this repo? Start here. The lab runs everything inside a ROS 2
+Jazzy environment; in our case that is the perception Docker container. In the
+commands below, `<workspace>` is the colcon workspace that contains this package
+(in the lab container that is `/home/tutuna/colcon_ws/src`).
+
+### 1. Open the environment
+
+This package is developed and run inside the lab's perception container. Open a
+shell in it:
+
+```bash
+docker exec -it ros2jazzy-perception bash
+```
+
+(If you run ROS 2 Jazzy natively instead, skip this step — everything below is
+the same.)
+
+### 2. Source ROS 2 and the workspace
+
+"Sourcing" a `setup.bash` just adds packages to your shell's search path so that
+`ros2 ...` can find them. You always source **two** files, in this order:
+
+```bash
+# (a) the ROS 2 system install — gives you ros2, rviz2, ros2 bag, etc.
+source /opt/ros/jazzy/setup.bash
+
+# (b) this workspace's build output — gives you DLIO and its launch files
+source <workspace>/install/setup.bash
+```
+
+You must re-source in **every new terminal**. Tip: put both lines in your
+`~/.bashrc` so they run automatically.
+
+### 3. Build (first time only, or after editing C++)
+
+```bash
+cd <workspace>
+source /opt/ros/jazzy/setup.bash
+colcon build --packages-select direct_lidar_inertial_odometry --symlink-install
+source install/setup.bash
+```
+
+`--symlink-install` links the config and launch files into the install space, so
+**edits to YAML / launch files take effect with no rebuild** — you only rebuild
+after changing C++ code under `src/`.
+
+> Build it as a plain Release (the default). Do **not** add sanitizer flags such
+> as `-fsanitize=undefined`: they make the node run several times slower and can
+> abort it mid-run.
+
+### 4. Run it — easiest path: the replay launch
+
+One command replays the dataset, shows it in RViz, and produces the maps + plots
+automatically:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source <workspace>/install/setup.bash
+ros2 launch direct_lidar_inertial_odometry replay.launch.py
+```
+
+It plays a hardcoded MCAP with the sim clock, brings up the DLIO nodes + RViz,
+and when the bag ends it saves the map, renders the dynamic-removal check image,
+and writes the run-state plots. Details: [Replay An MCAP End-To-End](#replay-an-mcap-end-to-end).
+
+### 5. Find your results
+
+Everything lands next to the dataset:
+
+```text
+<bag_dir>/replay_output/
+├── maps/                      # clean_map.pcd (static map), dynamic_points.pcd, ...
+├── run_stats/                 # pose / twist / IMU-bias plots (.png/.pdf) + run_stats.csv
+└── human_removal_verify.png   # removed dynamic points (red) over the static map
+```
+
+Open a `.pcd` in CloudCompare or `pcl_viewer`, and the `.png` files in any image
+viewer.
+
+The rest of this README is the detailed reference: manual two-terminal runs,
+saving maps on demand, tuning the dynamic filter, etc.
 
 ## Sensor Inputs
 
@@ -52,9 +137,14 @@ Build from the colcon workspace that contains this package:
 ```bash
 cd <workspace>
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-select direct_lidar_inertial_odometry --cmake-args -DCMAKE_BUILD_TYPE=Release
+colcon build --packages-select direct_lidar_inertial_odometry --symlink-install
 source install/setup.bash
 ```
+
+The package's `CMakeLists.txt` already builds in Release (`-O3`), so no extra
+`--cmake-args` are needed. Do not inject `-fsanitize=...` flags — they make the
+node much slower and can abort it on benign overflows. `--symlink-install` lets
+you edit YAML/launch files without rebuilding (rebuild only after C++ changes).
 
 Run tests:
 
@@ -78,15 +168,19 @@ ros2 launch direct_lidar_inertial_odometry dlio.launch.py \
   imu_topic:=/lidar_imu
 ```
 
-Terminal 2:
+Terminal 2 (remember to source ROS 2 here too — it is a new shell):
 
 ```bash
+source /opt/ros/jazzy/setup.bash
 ros2 bag play <bag_or_mcap_path> \
   -r 1.0 \
   --clock \
   --read-ahead-queue-size 2000 \
   --remap /tf:=/tf_bag
 ```
+
+`--clock` publishes `/clock` so the nodes can run on sim time; `--remap /tf:=/tf_bag`
+keeps the bag's TF from fighting the live one.
 
 Set `rviz:=false` if you do not want RViz:
 
@@ -106,15 +200,19 @@ source install/setup.bash
 ros2 launch direct_lidar_inertial_odometry a2_front.launch.py
 ```
 
-Terminal 2:
+Terminal 2 (new shell — source ROS 2 first):
 
 ```bash
+source /opt/ros/jazzy/setup.bash
 ros2 bag play <a2_bag_or_mcap_path> \
   -r 1.0 \
   --clock \
   --read-ahead-queue-size 2000 \
   --remap /tf:=/tf_bag
 ```
+
+Tip: prefer [`replay.launch.py`](#replay-an-mcap-end-to-end) below — it does both
+terminals (nodes + bag) and the saving for you in one command.
 
 The A2 launch enables:
 
@@ -132,6 +230,54 @@ Override that directory:
 
 ```bash
 ros2 launch direct_lidar_inertial_odometry a2_front.launch.py output_dir:=/tmp/my_dlio_run
+```
+
+## Replay An MCAP End-To-End
+
+`replay.launch.py` is a one-command, turnkey alternative to the two-terminal A2
+workflow above. It plays a hardcoded MCAP with the sim clock, brings up the A2
+front DLIO odom + map nodes and RViz2, and — when the bag finishes — automatically
+saves the map and generates the run-state plots, then shuts down.
+
+```bash
+cd <workspace>
+source install/setup.bash
+ros2 launch direct_lidar_inertial_odometry replay.launch.py
+```
+
+It does the following automatically:
+
+- Plays the hardcoded MCAP at `-r 1.0` with `--clock`, `--remap /tf:=/tf_bag`, and
+  a large read-ahead queue (started a few seconds after the nodes so no data is
+  missed).
+- Launches the A2 front odom + map nodes and RViz2 (`a2_front.rviz`) with
+  `use_sim_time:=true`.
+- On bag end: drains the backlog, saves the map (`clean_map.pcd`, `dlio_map.pcd`,
+  `dynamic_points.pcd` + `save_summary.txt`), renders the dynamic-removal
+  verification image (`human_removal_verify.png`: removed dynamic points in red
+  over the static map, plus a removed-point height profile), then shuts down so
+  the odom node writes the run-state plots.
+
+Outputs land next to the MCAP in `<bag_dir>/replay_output/{maps,run_stats}` plus
+`replay_output/human_removal_verify.png`.
+
+The verification image can also be regenerated standalone from any run's outputs:
+
+```bash
+python3 scripts/render_dynamic_verify.py <bag_dir>/replay_output
+```
+
+Set the dataset by editing the constants at the top of
+[launch/replay.launch.py](./launch/replay.launch.py) (`BAG`, plus `SAVE_LEAF` and
+the `*_SEC` drain/save timing).
+
+The bag runs as a launch process, so pause/resume with the player service rather
+than the SPACE key:
+
+```bash
+ros2 service call /rosbag2_player/pause          rosbag2_interfaces/srv/Pause        "{}"
+ros2 service call /rosbag2_player/resume         rosbag2_interfaces/srv/Resume       "{}"
+ros2 service call /rosbag2_player/toggle_paused  rosbag2_interfaces/srv/TogglePaused "{}"
 ```
 
 ## Save Maps

@@ -32,7 +32,16 @@
                                  0.,  0.,  1. ]
     imu/intrinsics/gyro/bias: [ 0.0, 0.0, 0.0 ]
 
-    extrinsics/baselink2imu/t: [0.0, 0.0, 0.0] 
+    # JT128 lidar -> IMU translation (manual Figure 5), red dot -> green dot in
+    # lidar axes: X=+8.62, Y=-9.14, Z=-47.84 mm.
+    # APPLIED because the Hesai driver (HesaiLidar_ROS_2.0) publishes the cloud
+    # uncompensated for this offset: distance_correction_flag=true puts the cloud
+    # on the lidar coordinate origin (red dot, manual Appendix D), and
+    # transform_flag=false means the driver does NOT shift it onto the IMU. The
+    # IMU is reported about the green dot, so DLIO must carry the lever arm.
+    # (Earlier this was zeroed for "jitter"; that jitter was the UBSan build
+    # dropping scans, now fixed by a clean rebuild.)
+    extrinsics/baselink2imu/t: [0.00862, -0.00914, -0.04784]
     extrinsics/baselink2imu/R: [ 1.,  0.,  0.,
                                  0.,  1.,  0.,
                                  0.,  0.,  1. ]

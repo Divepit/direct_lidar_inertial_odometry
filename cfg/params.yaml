@@ -20,7 +20,7 @@
 
     map/waitUntilMove: false
     map/dense/filtered: false
-    map/sparse/leafSize: 0.15
+    map/sparse/leafSize: 0.10
 
     map/crop/enabled: true       # set true to crop
     map/crop/box_size: 20.0      # meters (edge length of cube)
@@ -58,7 +58,9 @@
     # gyro in rad/s. Some bags/drivers report accel in g and gyro in deg/s; this
     # block detects that early and scales the data before DLIO calibration.
     odom/imu/unit_check/enabled: true
-    odom/imu/unit_check/auto_scale: true
+    # Auto unit detection disabled: IMU is assumed to already be SI
+    # (accel in m/s^2, gyro in rad/s). Scales are forced to 1.0; no rescaling.
+    odom/imu/unit_check/auto_scale: false
     odom/imu/unit_check/min_samples: 50
     odom/imu/unit_check/max_wait_sec: 0.5
     odom/imu/unit_check/warn_period_sec: 2.0
@@ -68,7 +70,7 @@
     odom/imu/unit_check/gyro_scale_override: 0.0
 
     odom/preprocessing/cropBoxFilter/size: 0.1
-    odom/preprocessing/voxelFilter/res: 0.1
+    odom/preprocessing/voxelFilter/res: 0.05
 
     odom/keyframe/threshD: 1.25
     odom/keyframe/threshR: 5.0
@@ -150,8 +152,8 @@
     dynamic_filter/m_detector/static_veto_ratio: 0.25
 
     # Aggressive (wn=3.0, zeta=0.85): Kp=5.1, Kv=9.0, Kq=12.0, Kab=3.0, Kgb=1.5
-    odom/geo/Kp: 5.1
-    odom/geo/Kv: 11.25
+    odom/geo/Kp: 5.10
+    odom/geo/Kv: 4.52
     odom/geo/Kq: 4.0
     odom/geo/Kab: 2.25
     odom/geo/Kgb: 1.0
