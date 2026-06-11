@@ -142,8 +142,9 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   auto lidar_sub_opt = rclcpp::SubscriptionOptions();
   lidar_sub_opt.callback_group = this->lidar_cb_group;
 
-  // Reliable transport with bounded history to absorb bursts before callback queuing.
-  const size_t lidar_qos_depth = this->pointcloud_queue_size_;
+  // Latest-only LiDAR intake: if DLIO is slower than the sensor, stale clouds
+  // must be dropped before they can build up in DDS or the worker queue.
+  const size_t lidar_qos_depth = 1;
   auto qosLiDAR = rclcpp::QoS(rclcpp::KeepLast(lidar_qos_depth))
               .reliability(rclcpp::ReliabilityPolicy::Reliable)
               .durability(rclcpp::DurabilityPolicy::Volatile);
@@ -867,8 +868,8 @@ void dlio::OdomNode::performReset() {
           return this->shouldStop() || !this->pc_q_.empty();
         });
         if (this->shouldStop()) break;
-        gate_job = std::move(this->pc_q_.front());
-        this->pc_q_.pop_front();
+        gate_job = std::move(this->pc_q_.back());
+        this->pc_q_.clear();
       }
 
       if (this->scanPassesGeometryGate(gate_job.cloud_msg)) {
@@ -877,7 +878,8 @@ void dlio::OdomNode::performReset() {
                     "Returning scan to queue for normal processing.\033[0m", dropped);
         {
           std::lock_guard<std::mutex> lk(this->pc_q_mtx_);
-          this->pc_q_.push_front(std::move(gate_job));
+          this->pc_q_.clear();
+          this->pc_q_.push_back(std::move(gate_job));
         }
         this->pc_q_cv_.notify_one();
         break;
@@ -1136,16 +1138,22 @@ void dlio::OdomNode::workerLoop() {
   }
 }
 void dlio::OdomNode::enqueuePointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& pc) {
+  std::size_t dropped = 0;
   {
     std::lock_guard<std::mutex> lk(pc_q_mtx_);
 
-    // Keep queue bounded; if overloaded, drop the oldest scan and keep recent measurements.
-    while (pc_q_.size() >= this->pointcloud_queue_size_) {
-      pc_q_.pop_front();
-      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Pointcloud queue full. Dropping oldest scan.");
-    }
+    dropped = pc_q_.size();
+    pc_q_.clear();
 
     pc_q_.push_back(PointCloudJob{pc});
+  }
+  if (dropped > 0) {
+    RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        2000,
+        "Pointcloud queue replaced with latest scan. Dropped %zu stale scan(s).",
+        dropped);
   }
   pc_q_cv_.notify_one();
 }
@@ -1273,8 +1281,17 @@ void dlio::OdomNode::pointCloudWorkerLoop() {
         continue;
       }
 
-      job = std::move(pc_q_.front());
-      pc_q_.pop_front();
+      const std::size_t dropped = pc_q_.size() - 1;
+      job = std::move(pc_q_.back());
+      pc_q_.clear();
+      if (dropped > 0) {
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(),
+            *this->get_clock(),
+            2000,
+            "Worker skipped %zu stale pointcloud scan(s). Processing latest scan.",
+            dropped);
+      }
     }
 
     // Wait here, before any pointcloud processing begins.
@@ -1321,9 +1338,14 @@ void dlio::OdomNode::getParams() {
 
   // Deskew Flag
   dlio::declare_param(this, "pointcloud/deskew", this->deskew_, true);
-  dlio::declare_param(this, "pointcloud/queueSize", this->pointcloud_queue_size_, 5);
+  dlio::declare_param(this, "pointcloud/queueSize", this->pointcloud_queue_size_, 1);
   if (this->pointcloud_queue_size_ < 1) {
     RCLCPP_WARN(this->get_logger(), "pointcloud/queueSize must be >= 1. Falling back to 1.");
+    this->pointcloud_queue_size_ = 1;
+  } else if (this->pointcloud_queue_size_ > 1) {
+    RCLCPP_WARN(this->get_logger(),
+                "Latest-only pointcloud processing is enabled. Clamping pointcloud/queueSize from %d to 1.",
+                this->pointcloud_queue_size_);
     this->pointcloud_queue_size_ = 1;
   }
 

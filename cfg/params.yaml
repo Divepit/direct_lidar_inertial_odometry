@@ -18,6 +18,8 @@
     frames/lidar: livox_lidar
     frames/imu: livox_imu
 
+    pointcloud/queueSize: 1
+
     map/waitUntilMove: false
     map/dense/filtered: false
     map/sparse/leafSize: 0.15
@@ -38,11 +40,11 @@
     odom/imu/calibration/time: 3.0
     odom/imu/bufferSize: 5000
 
-    odom/preprocessing/cropBoxFilter/size: 1.0
+    odom/preprocessing/cropBoxFilter/size: 0.6
     odom/preprocessing/voxelFilter/res: 0.1
 
-    odom/keyframe/threshD: 10.25
-    odom/keyframe/threshR: 10.0
+    odom/keyframe/threshD: 5.0
+    odom/keyframe/threshR: 5.0
 
     odom/submap/keyframe/knn: 10
     odom/submap/keyframe/kcv: 10
