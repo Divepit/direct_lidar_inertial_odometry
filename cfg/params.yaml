@@ -22,7 +22,7 @@
 
     map/waitUntilMove: false
     map/dense/filtered: false
-    map/sparse/leafSize: 0.15
+    map/sparse/leafSize: 0.4
 
     map/crop/enabled: true       # set true to crop
     map/crop/box_size: 20.0      # meters (edge length of cube)
@@ -40,18 +40,18 @@
     odom/imu/calibration/time: 3.0
     odom/imu/bufferSize: 5000
 
-    odom/preprocessing/cropBoxFilter/size: 0.6
-    odom/preprocessing/voxelFilter/res: 0.1
+    odom/preprocessing/cropBoxFilter/size: 1.0
+    odom/preprocessing/voxelFilter/res: 0.4
 
-    odom/keyframe/threshD: 5.0
-    odom/keyframe/threshR: 5.0
+    odom/keyframe/threshD: 10.0
+    odom/keyframe/threshR: 10.0
 
     odom/submap/keyframe/knn: 10
     odom/submap/keyframe/kcv: 10
     odom/submap/keyframe/kcc: 10
 
-    odom/gicp/minNumPoints: 128
-    odom/gicp/kCorrespondences: 21
+    odom/gicp/minNumPoints: 64
+    odom/gicp/kCorrespondences: 7
     odom/gicp/maxCorrespondenceDistance: 0.5
     odom/gicp/maxIterations: 64
 
