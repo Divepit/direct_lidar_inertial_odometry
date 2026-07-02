@@ -14,6 +14,7 @@
 
 // ROS
 #include "rclcpp/rclcpp.hpp"
+#include "rmw/qos_profiles.h"
 #include "direct_lidar_inertial_odometry/srv/save_pcd.hpp"
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
