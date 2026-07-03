@@ -1546,7 +1546,13 @@ sensor_msgs::msg::Imu::SharedPtr dlio::OdomNode::transformImu(const sensor_msgs:
                             imu_raw->linear_acceleration.y,
                             imu_raw->linear_acceleration.z);
 
-  Eigen::Vector3f lin_accel_cg = this->extrinsics.baselink2imu.R * lin_accel;
+  double scale = 1.0;
+  if (this->sensor == dlio::SensorType::LIVOX)
+  {
+    scale = this->gravity_;
+  }
+
+  Eigen::Vector3f lin_accel_cg = scale * this->extrinsics.baselink2imu.R * lin_accel;
 
   lin_accel_cg = lin_accel_cg + ((ang_vel_cg - ang_vel_cg_prev) / dt).cross(-this->extrinsics.baselink2imu.t) + ang_vel_cg.cross(ang_vel_cg.cross(-this->extrinsics.baselink2imu.t));
 

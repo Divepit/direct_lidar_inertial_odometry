@@ -13,8 +13,8 @@ def generate_launch_description():
     imu_topic = LaunchConfiguration('imu_topic', default='/livox/imu')
     odom_frame = LaunchConfiguration('odom_frame', default='robot/odom')
     baselink_frame = LaunchConfiguration('baselink_frame', default='robot/base_link')
-    lidar_frame = LaunchConfiguration('lidar_frame', default='mid360_link')
-    imu_frame = LaunchConfiguration('imu_frame', default='imu')
+    lidar_frame = LaunchConfiguration('lidar_frame', default='robot/lidar')
+    imu_frame = LaunchConfiguration('imu_frame', default='robot/imu')
 
     declare_robot_namespace_arg = DeclareLaunchArgument(
         'robot_namespace',
@@ -43,13 +43,13 @@ def generate_launch_description():
     )
     declare_lidar_frame_arg = DeclareLaunchArgument(
         'lidar_frame',
-        default_value='mid360_link',
-        description='LiDAR frame id used by DLIO'
+        default_value='robot/lidar',
+        description='Internal LiDAR frame id published by DLIO'
     )
     declare_imu_frame_arg = DeclareLaunchArgument(
         'imu_frame',
-        default_value='imu',
-        description='IMU frame id used by DLIO'
+        default_value='robot/imu',
+        description='Internal IMU frame id published by DLIO'
     )
 
     # Load DLIO parameters
@@ -70,7 +70,7 @@ def generate_launch_description():
                 "frames/baselink": baselink_frame,
                 "frames/lidar": lidar_frame,
                 "frames/imu": imu_frame,
-                "frames/publish_sensor_tf": False,
+                "frames/publish_sensor_tf": True,
             },
         ],
         remappings=[
