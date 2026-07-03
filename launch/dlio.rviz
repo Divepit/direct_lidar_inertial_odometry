@@ -60,7 +60,7 @@ Visualization Manager:
           Length: 1
           Name: odom
           Radius: 0.25
-          Reference Frame: odom
+          Reference Frame: robot/odom
           Show Trail: false
           Value: true
         - Alpha: 1
@@ -69,7 +69,7 @@ Visualization Manager:
           Length: 1
           Name: base_link
           Radius: 0.25
-          Reference Frame: base_link
+          Reference Frame: robot/base_link
           Show Trail: false
           Value: true
       Enabled: true
@@ -101,7 +101,7 @@ Visualization Manager:
           Size (Pixels): 2
           Size (m): 0.009999999776482582
           Style: Points
-          Topic: /dlio/odom_node/pointcloud/deskewed
+          Topic: /robot/dlio/odom_node/pointcloud/deskewed
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
@@ -131,7 +131,7 @@ Visualization Manager:
           Size (Pixels): 1
           Size (m): 0.009999999776482582
           Style: Points
-          Topic: /dlio/odom_node/pointcloud/deskewed
+          Topic: /robot/dlio/odom_node/pointcloud/deskewed
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
@@ -161,7 +161,7 @@ Visualization Manager:
           Size (Pixels): 1
           Size (m): 0.05000000074505806
           Style: Points
-          Topic: /dlio/map_node/map
+          Topic: /robot/dlio/map_node/map
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
@@ -202,7 +202,7 @@ Visualization Manager:
             Shaft Length: 1
             Shaft Radius: 0.05000000074505806
             Value: Axes
-          Topic: /dlio/odom_node/odom
+          Topic: /robot/dlio/odom_node/odom
           Unreliable: false
           Value: false
         - Alpha: 1
@@ -219,7 +219,7 @@ Visualization Manager:
           Shaft Length: 0.23000000417232513
           Shaft Radius: 0.009999999776482582
           Shape: Axes
-          Topic: /dlio/odom_node/keyframes
+          Topic: /robot/dlio/odom_node/keyframes
           Unreliable: false
           Value: false
         - Alpha: 1
@@ -243,7 +243,7 @@ Visualization Manager:
           Radius: 0.029999999329447746
           Shaft Diameter: 0.10000000149011612
           Shaft Length: 0.10000000149011612
-          Topic: /dlio/odom_node/path
+          Topic: /robot/dlio/odom_node/path
           Unreliable: false
           Value: true
       Enabled: true
@@ -252,7 +252,7 @@ Visualization Manager:
   Global Options:
     Background Color: 0; 0; 0
     Default Light: true
-    Fixed Frame: odom
+    Fixed Frame: robot/odom
     Frame Rate: 30
   Name: root
   Tools:

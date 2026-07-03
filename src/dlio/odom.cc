@@ -197,6 +197,7 @@ void dlio::OdomNode::getParams()
   dlio::declare_param(this, "frames/baselink", this->baselink_frame, "base_link");
   dlio::declare_param(this, "frames/lidar", this->lidar_frame, "lidar");
   dlio::declare_param(this, "frames/imu", this->imu_frame, "imu");
+  dlio::declare_param(this, "frames/publish_sensor_tf", this->publish_sensor_tf_, true);
 
   // Deskew Flag
   dlio::declare_param(this, "pointcloud/deskew", this->deskew_, true);
@@ -373,6 +374,21 @@ void dlio::OdomNode::publishPose()
   this->pose_ros.pose.orientation.z = this->state.q.z();
 
   this->pose_pub->publish(this->pose_ros);
+
+  geometry_msgs::msg::TransformStamped transformStamped;
+  transformStamped.header.stamp = this->imu_stamp;
+  transformStamped.header.frame_id = this->odom_frame;
+  transformStamped.child_frame_id = this->baselink_frame;
+
+  transformStamped.transform.translation.x = this->state.p[0];
+  transformStamped.transform.translation.y = this->state.p[1];
+  transformStamped.transform.translation.z = this->state.p[2];
+  transformStamped.transform.rotation.w = this->state.q.w();
+  transformStamped.transform.rotation.x = this->state.q.x();
+  transformStamped.transform.rotation.y = this->state.q.y();
+  transformStamped.transform.rotation.z = this->state.q.z();
+
+  br->sendTransform(transformStamped);
 }
 
 void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud, Eigen::Matrix4f T_cloud)
@@ -415,39 +431,42 @@ void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published
 
   br->sendTransform(transformStamped);
 
-  // transform: baselink to imu
-  transformStamped.header.stamp = this->imu_stamp;
-  transformStamped.header.frame_id = this->baselink_frame;
-  transformStamped.child_frame_id = this->imu_frame;
+  if (this->publish_sensor_tf_)
+  {
+    // transform: baselink to imu
+    transformStamped.header.stamp = this->imu_stamp;
+    transformStamped.header.frame_id = this->baselink_frame;
+    transformStamped.child_frame_id = this->imu_frame;
 
-  transformStamped.transform.translation.x = this->extrinsics.baselink2imu.t[0];
-  transformStamped.transform.translation.y = this->extrinsics.baselink2imu.t[1];
-  transformStamped.transform.translation.z = this->extrinsics.baselink2imu.t[2];
+    transformStamped.transform.translation.x = this->extrinsics.baselink2imu.t[0];
+    transformStamped.transform.translation.y = this->extrinsics.baselink2imu.t[1];
+    transformStamped.transform.translation.z = this->extrinsics.baselink2imu.t[2];
 
-  Eigen::Quaternionf q(this->extrinsics.baselink2imu.R);
-  transformStamped.transform.rotation.w = q.w();
-  transformStamped.transform.rotation.x = q.x();
-  transformStamped.transform.rotation.y = q.y();
-  transformStamped.transform.rotation.z = q.z();
+    Eigen::Quaternionf q(this->extrinsics.baselink2imu.R);
+    transformStamped.transform.rotation.w = q.w();
+    transformStamped.transform.rotation.x = q.x();
+    transformStamped.transform.rotation.y = q.y();
+    transformStamped.transform.rotation.z = q.z();
 
-  br->sendTransform(transformStamped);
+    br->sendTransform(transformStamped);
 
-  // transform: baselink to lidar
-  transformStamped.header.stamp = this->imu_stamp;
-  transformStamped.header.frame_id = this->baselink_frame;
-  transformStamped.child_frame_id = this->lidar_frame;
+    // transform: baselink to lidar
+    transformStamped.header.stamp = this->imu_stamp;
+    transformStamped.header.frame_id = this->baselink_frame;
+    transformStamped.child_frame_id = this->lidar_frame;
 
-  transformStamped.transform.translation.x = this->extrinsics.baselink2lidar.t[0];
-  transformStamped.transform.translation.y = this->extrinsics.baselink2lidar.t[1];
-  transformStamped.transform.translation.z = this->extrinsics.baselink2lidar.t[2];
+    transformStamped.transform.translation.x = this->extrinsics.baselink2lidar.t[0];
+    transformStamped.transform.translation.y = this->extrinsics.baselink2lidar.t[1];
+    transformStamped.transform.translation.z = this->extrinsics.baselink2lidar.t[2];
 
-  Eigen::Quaternionf qq(this->extrinsics.baselink2lidar.R);
-  transformStamped.transform.rotation.w = qq.w();
-  transformStamped.transform.rotation.x = qq.x();
-  transformStamped.transform.rotation.y = qq.y();
-  transformStamped.transform.rotation.z = qq.z();
+    Eigen::Quaternionf qq(this->extrinsics.baselink2lidar.R);
+    transformStamped.transform.rotation.w = qq.w();
+    transformStamped.transform.rotation.x = qq.x();
+    transformStamped.transform.rotation.y = qq.y();
+    transformStamped.transform.rotation.z = qq.z();
 
-  br->sendTransform(transformStamped);
+    br->sendTransform(transformStamped);
+  }
 }
 
 void dlio::OdomNode::publishCloud(pcl::PointCloud<PointType>::ConstPtr published_cloud, Eigen::Matrix4f T_cloud)
@@ -658,7 +677,7 @@ void dlio::OdomNode::deskewPointcloud()
                         boost::range::index_value<PointType &, long> p2)
     { return p1.value().t != p2.value().t; };
     extract_point_time = [&sweep_ref_time](boost::range::index_value<PointType &, long> pt)
-    { return sweep_ref_time + pt.value().t * 1e-9f; };
+    { return sweep_ref_time + pt.value().t * 1e-9; };
   }
   else if (this->sensor == dlio::SensorType::VELODYNE)
   {
@@ -690,7 +709,7 @@ void dlio::OdomNode::deskewPointcloud()
                         boost::range::index_value<PointType &, long> p2)
     { return p1.value().timestamp != p2.value().timestamp; };
     extract_point_time = [&sweep_ref_time](boost::range::index_value<PointType &, long> pt)
-    { return pt.value().timestamp * 1e-9f; };
+    { return pt.value().timestamp * 1e-9; };
   }
 
   // copy points into deskewed_scan_ in order of timestamp
@@ -839,12 +858,29 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
 
   if (!this->first_valid_scan)
   {
+    RCLCPP_WARN_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        2000,
+        "DLIO waiting for first valid scan. dlio_initialized=%d imu_buffer_size=%zu deskew=%d sensor=%d scan_stamp=%.6f first_imu_stamp=%.6f",
+        this->dlio_initialized.load(),
+        this->imu_buffer.size(),
+        this->deskew_,
+        static_cast<int>(this->sensor),
+        this->scan_stamp,
+        this->first_imu_stamp);
     return;
   }
 
   if (this->current_scan->points.size() <= this->gicp_min_num_points_)
   {
-    RCLCPP_FATAL(this->get_logger(), "Low number of points in the cloud!");
+    RCLCPP_ERROR_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        2000,
+        "Low number of points in the cloud: %zu <= %d",
+        this->current_scan->points.size(),
+        this->gicp_min_num_points_);
     return;
   }
 
@@ -864,6 +900,13 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
   // Set initial frame as first keyframe
   if (this->keyframes.size() == 0)
   {
+    RCLCPP_INFO_THROTTLE(
+        this->get_logger(),
+        *this->get_clock(),
+        2000,
+        "Initializing first keyframe. current_scan_points=%zu deskewed_points=%zu",
+        this->current_scan->points.size(),
+        this->deskewed_scan->points.size());
     this->initializeInputTarget();
     this->main_loop_running = false;
     this->submap_future =
@@ -911,6 +954,15 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
   {
     published_cloud = this->deskewed_scan;
   }
+  RCLCPP_INFO_THROTTLE(
+      this->get_logger(),
+      *this->get_clock(),
+      2000,
+      "Publishing DLIO outputs. keyframes=%zu current_scan_points=%zu deskewed_points=%zu trajectory=%zu",
+      this->keyframes.size(),
+      this->current_scan->points.size(),
+      this->deskewed_scan->points.size(),
+      this->trajectory.size());
   this->publish_thread = std::thread(&dlio::OdomNode::publishToROS, this, published_cloud, this->T_corr);
   this->publish_thread.detach();
 
@@ -1519,7 +1571,7 @@ void dlio::OdomNode::computeSpaciousness()
   // compute range of points
   std::vector<float> ds;
 
-  for (int i = 0; i <= this->original_scan->points.size(); i++)
+  for (size_t i = 0; i < this->original_scan->points.size(); i++)
   {
     float d = std::sqrt(pow(this->original_scan->points[i].x, 2) +
                         pow(this->original_scan->points[i].y, 2));
