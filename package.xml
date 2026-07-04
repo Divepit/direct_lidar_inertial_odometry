@@ -24,6 +24,11 @@
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>pcl_ros</depend>
+  <!-- CZ and Claude: self-filter node in dlio.launch -->
+  <exec_depend>sensor_filters</exec_depend>
+  <exec_depend>robot_body_filter</exec_depend>
+  <exec_depend>g1_description</exec_depend>
+  <!-- end of CZ and Claude -->
 
   <export>
   </export>

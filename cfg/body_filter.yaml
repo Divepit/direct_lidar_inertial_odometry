@@ -1,0 +1,33 @@
+# CZ and Claude: G1 self-filter for the DLIO deskewed cloud (robot_body_filter via sensor_filters)
+# Removes points on/near (<= 5 cm) the robot's own body links; cloud stays in robot/odom frame.
+cloud_filter_chain:
+  - name: g1_body_filter
+    type: robot_body_filter/RobotBodyFilterPointCloud2
+    params:
+      frames/fixed: "robot/odom"          # cloud frame; TF root of the runtime tree
+      frames/sensor: "livox_frame"
+      # frames/filtering and frames/output default to frames/fixed -> output stays in robot/odom
+      sensor/point_by_point: false        # cloud is already deskewed to a single stamp
+      filter/do_clipping: false
+      filter/do_contains_test: true
+      filter/do_shadow_test: false        # raycasting off -> major CPU saving
+      body_model/inflation/scale: 1.0
+      body_model/inflation/padding: 0.1  # dilation: points near the body also removed
+      body_model/robot_description_param: "/robot/robot_description_body_filter"  # AABB-box URDF loaded by dlio.launch
+      only_links: [torso_link, head_link,
+                   left_shoulder_pitch_link, left_shoulder_roll_link, left_shoulder_yaw_link,
+                   right_shoulder_pitch_link, right_shoulder_roll_link, right_shoulder_yaw_link,
+                   left_elbow_link, right_elbow_link,
+                   left_wrist_roll_link, left_wrist_pitch_link, left_wrist_yaw_link,
+                   right_wrist_roll_link, right_wrist_pitch_link, right_wrist_yaw_link,
+                   left_knee_link, right_knee_link,
+                   left_ankle_roll_link, right_ankle_roll_link,
+                   livox_frame]  # crop box in sensor frame: drops -1<x<0.2, -1<y<1, -1<z<1
+      # exact bounds for the crop box: no inflation on livox_frame
+      body_model/inflation/per_link/padding: {"livox_frame": 0.0}
+      body_model/inflation/per_link/scale: {"livox_frame": 1.0}
+      bounding_sphere/compute: false      # no debug shape publishing
+      bounding_box/compute: false
+      transforms/timeout/reachable: 0.2
+      transforms/timeout/unreachable: 0.2
+# end of CZ and Claude

@@ -54,6 +54,19 @@
 
   </node>
 
+  <!-- CZ and Claude: G1 self-filter: removes robot-body points (+dilation) from the deskewed cloud.
+       Requires base_odom.launch running (full-body TF). Uses a dedicated URDF whose collisions are
+       AABB boxes (fast contains-tests); queue size 1 so a lagging filter never builds a backlog. -->
+  <param name="$(arg robot_namespace)/robot_description_body_filter" textfile="$(find g1_description)/g1_29dof_body_filter.urdf"/>
+  <node ns="$(arg robot_namespace)" name="body_filter" pkg="sensor_filters" type="pointcloud2_filter_chain" output="screen">
+    <rosparam file="$(find direct_lidar_inertial_odometry)/cfg/body_filter.yaml" command="load"/>
+    <param name="input_queue_size" value="1"/>
+    <param name="output_queue_size" value="1"/>
+    <remap from="~input"  to="dlio/odom_node/pointcloud/deskewed"/>
+    <remap from="~output" to="dlio/odom_node/pointcloud/deskewed_self_filtered"/>
+  </node>
+  <!-- end of CZ and Claude -->
+
   <!-- RViz -->
   <node pkg="rviz" type="rviz" name="dlio_rviz" args="-d $(find direct_lidar_inertial_odometry)/launch/dlio.rviz" if="$(arg rviz)"/>
 
