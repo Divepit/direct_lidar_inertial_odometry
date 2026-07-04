@@ -41,6 +41,9 @@ private:
   void getScanFromROS(const sensor_msgs::PointCloud2ConstPtr& pc);
   void preprocessPoints();
   void deskewPointcloud();
+  // CZ and Claude: split fully-deskewed cloud into odometry (cropped) and publishing (full) clouds
+  void splitDeskewedScan(const pcl::PointCloud<PointType>::Ptr& full_scan, const std::vector<int>& keep_indices);
+  // end of CZ and Claude
   void initializeInputTarget();
   void setInputSource();
 
@@ -148,6 +151,10 @@ private:
   pcl::PointCloud<PointType>::ConstPtr original_scan;
   pcl::PointCloud<PointType>::ConstPtr deskewed_scan;
   pcl::PointCloud<PointType>::ConstPtr current_scan;
+  // CZ and Claude: uncropped variants; crop-box points are deskewed and published but not used for odometry
+  pcl::PointCloud<PointType>::ConstPtr original_scan_full;
+  pcl::PointCloud<PointType>::ConstPtr deskewed_scan_full;
+  // end of CZ and Claude
 
   // Keyframes
   pcl::PointCloud<PointType>::ConstPtr keyframe_cloud;
