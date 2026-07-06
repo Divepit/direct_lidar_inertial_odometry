@@ -12,7 +12,7 @@ cloud_filter_chain:
       filter/do_contains_test: true
       filter/do_shadow_test: false        # raycasting off -> major CPU saving
       body_model/inflation/scale: 1.0
-      body_model/inflation/padding: 0.1  # dilation: points near the body also removed
+      body_model/inflation/padding: 0.06  # dilation: points near the body also removed
       body_model/robot_description_param: "/robot/robot_description_body_filter"  # AABB-box URDF loaded by dlio.launch
       only_links: [torso_link, head_link,
                    left_shoulder_pitch_link, left_shoulder_roll_link, left_shoulder_yaw_link,
@@ -20,6 +20,7 @@ cloud_filter_chain:
                    left_elbow_link, right_elbow_link,
                    left_wrist_roll_link, left_wrist_pitch_link, left_wrist_yaw_link,
                    right_wrist_roll_link, right_wrist_pitch_link, right_wrist_yaw_link,
+                   left_rubber_hand, right_rubber_hand,  # CZ and Claude: 5cm ball collision in body-filter URDF
                    left_knee_link, right_knee_link,
                    left_ankle_roll_link, right_ankle_roll_link,
                    livox_frame]  # crop box in sensor frame: drops -1<x<0.2, -1<y<1, -1<z<1
@@ -28,6 +29,11 @@ cloud_filter_chain:
       body_model/inflation/per_link/scale: {"livox_frame": 1.0}
       bounding_sphere/compute: false      # no debug shape publishing
       bounding_box/compute: false
+      # CZ and Claude: visualize the filter body model (inflated contains-test shapes)
+      # as a MarkerArray on <filter node ns>/robot_model_for_contains_test; view in RViz
+      # with a MarkerArray display. Set false again to save CPU when not debugging.
+      debug/marker/contains: true
+      # end of CZ and Claude
       transforms/timeout/reachable: 0.2
       transforms/timeout/unreachable: 0.2
 # end of CZ and Claude
