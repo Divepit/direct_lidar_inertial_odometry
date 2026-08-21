@@ -20,7 +20,7 @@
 
     map/waitUntilMove: false
     map/dense/filtered: false
-    map/sparse/leafSize: 0.25
+    map/sparse/leafSize: 0.1
 
     odom/gravity: 9.80665
     odom/computeTimeOffset: true
@@ -29,29 +29,34 @@
     odom/imu/calibration/gyro: true
     odom/imu/calibration/accel: true
     odom/imu/calibration/time: 3.0
-    odom/imu/bufferSize: 5000
+    odom/imu/bufferSize: 15000
 
+    # Rotation accuracy: the previous coarse settings (voxel 0.25 m, gicp
+    # rotationEpsilon 0.01, keyframe threshR 45 deg, submap k=10) gave usable
+    # translation but poor yaw while turning, which the perceptive policies see
+    # directly as a mis-rotated height scan. Values below match the reference
+    # stack that walks with yaw commands.
     odom/preprocessing/cropBoxFilter/size: 1.0
-    odom/preprocessing/voxelFilter/res: 0.25
+    odom/preprocessing/voxelFilter/res: 0.03
 
-    odom/keyframe/threshD: 1.0
-    odom/keyframe/threshR: 45.0
+    odom/keyframe/threshD: 0.5
+    odom/keyframe/threshR: 30.0
 
-    odom/submap/keyframe/knn: 10
-    odom/submap/keyframe/kcv: 10
-    odom/submap/keyframe/kcc: 10
+    odom/submap/keyframe/knn: 20
+    odom/submap/keyframe/kcv: 20
+    odom/submap/keyframe/kcc: 20
     odom/gicp/minNumPoints: 64
     odom/gicp/kCorrespondences: 16
-    odom/gicp/maxCorrespondenceDistance: 0.5
-    odom/gicp/maxIterations: 32
-    odom/gicp/transformationEpsilon: 0.01
-    odom/gicp/rotationEpsilon: 0.01
+    odom/gicp/maxCorrespondenceDistance: 0.7
+    odom/gicp/maxIterations: 48
+    odom/gicp/transformationEpsilon: 0.001
+    odom/gicp/rotationEpsilon: 0.001
     odom/gicp/initLambdaFactor: 1e-9
 
-    odom/geo/Kp: 8.0
-    odom/geo/Kv: 12.0
-    odom/geo/Kq: 4.0
-    odom/geo/Kab: 6.0
-    odom/geo/Kgb: 1.0
+    odom/geo/Kp: 5.0
+    odom/geo/Kv: 8.0
+    odom/geo/Kq: 5.0
+    odom/geo/Kab: 5.0
+    odom/geo/Kgb: 2.0
     odom/geo/abias_max: 5.0
     odom/geo/gbias_max: 0.5

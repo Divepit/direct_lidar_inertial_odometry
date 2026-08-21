@@ -15,7 +15,7 @@
 
     version: 1.1.1
 
-    adaptive: false
+    adaptive: true
 
     pointcloud/deskew: true
     pointcloud/voxelize: true
