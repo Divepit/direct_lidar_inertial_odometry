@@ -11,6 +11,7 @@
  ***********************************************************/
 
 #include "dlio/dlio.h"
+#include "dlio/imu_timestamp_tracker.h"
 
 // ROS
 #include "rclcpp/rclcpp.hpp"
@@ -62,6 +63,7 @@ private:
 
   struct State;
   struct ImuMeas;
+  struct ImuBias;
   struct InitialImuBaseline;
 
   void getParams();
@@ -115,17 +117,20 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   bool imuMeasFromTimeRange(double start_time, double end_time,
                             boost::circular_buffer<ImuMeas>::reverse_iterator& begin_imu_it,  // NOLINT(bugprone-easily-swappable-parameters)
                             boost::circular_buffer<ImuMeas>::reverse_iterator& end_imu_it);
+  bool predictScanState(double target_time);
   std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>>
     integrateImu(double start_time, Eigen::Quaternionf q_init, Eigen::Vector3f p_init, Eigen::Vector3f v_init,
-                 const std::vector<double>& sorted_timestamps);
+                 const std::vector<double>& sorted_timestamps, const ImuBias& bias,
+                 State* state_at_first_timestamp = nullptr);
   std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>>
     integrateImuInternal(const Eigen::Quaternionf& q_init, const Eigen::Vector3f& p_init, const Eigen::Vector3f& v_init,
-                         const std::vector<double>& sorted_timestamps,
+                         const std::vector<double>& sorted_timestamps, const ImuBias& bias,
+                         State* state_at_first_timestamp,
                          const boost::circular_buffer<ImuMeas>::reverse_iterator& begin_imu_it,  // NOLINT(bugprone-easily-swappable-parameters)
                          const boost::circular_buffer<ImuMeas>::reverse_iterator& end_imu_it);
   void propagateGICP();
 
-  void propagateState();
+  bool propagateState(const ImuMeas& imu);
   void updateState();
 
   void setAdaptiveParams();
@@ -136,7 +141,9 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   void computeDensity();
   void computeMotionDeviation();
 
-  sensor_msgs::msg::Imu::SharedPtr transformImu(const sensor_msgs::msg::Imu::SharedPtr& imu);
+  sensor_msgs::msg::Imu::SharedPtr transformImu(
+      const sensor_msgs::msg::Imu::SharedPtr& imu,
+      const std::optional<double>& dt);
 
   void updateKeyframes();
   void computeConvexHull();
@@ -337,19 +344,26 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   // IMU
   rclcpp::Time imu_stamp;
   double first_imu_stamp;
-  double prev_imu_stamp;
   double imu_dp, imu_dq_deg;
 
   struct ImuMeas {
     double stamp;
     double dt; // defined as the difference between the current and the previous measurement
+    // Transformed/calibrated body-frame measurements with bias still present.
+    // Bias is applied explicitly at integration time so callback scheduling
+    // cannot change a scan's IMU trajectory.
     Eigen::Vector3f ang_vel;
     Eigen::Vector3f lin_accel;
   }; ImuMeas imu_meas;
 
   boost::circular_buffer<ImuMeas> imu_buffer;
   std::mutex mtx_imu;
+  // Serializes callback-side IMU timing/transform state with internal reset.
+  std::mutex mtx_imu_callback_;
   std::condition_variable cv_imu_stamp;
+
+  ImuTimestampTracker imu_input_timestamps_;
+  ImuTimestampTracker imu_integration_timestamps_;
 
   // Resettable IMU calibration accumulation state.
   int imu_calib_samples_ = 0;
@@ -358,8 +372,6 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   bool imu_calib_printed_ = false;
 
   // Resettable IMU frame-transform history.
-  double imu_transform_prev_stamp_ = 0.0;
-  bool imu_transform_prev_valid_ = false;
   Eigen::Vector3f imu_transform_ang_vel_prev_ = Eigen::Vector3f::Zero();
 
   static bool comparatorImu(const ImuMeas& m1, const ImuMeas& m2) {
@@ -399,6 +411,16 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
     Velocity v;
     ImuBias b; // imu biases in body frame
   }; State state;
+
+  // The observer correction is defined at scan_stamp. Keep that corrected
+  // state separate from the live IMU-rate state, which may be newer.
+  State scan_state;
+  State scan_state_prior;
+  double scan_state_stamp_ = 0.0;
+  double scan_state_prior_stamp_ = 0.0;
+  double live_state_stamp_ = 0.0;
+  bool scan_state_valid_ = false;
+  bool scan_state_prior_valid_ = false;
 
   struct InitialImuBaseline {
     bool valid = false;
@@ -504,6 +526,7 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   double gicp_transformation_ep_;
   double gicp_rotation_ep_;
   double gicp_init_lambda_factor_;
+  double gicp_freeze_trial_trigger_translation_ = 0.0;
 
   double geo_Kp_;
   double geo_Kv_;
@@ -533,6 +556,8 @@ void publishCloud(const pcl::PointCloud<PointType>::ConstPtr& cloud,
   double degen_trans_eig_abs_thresh_ = 200.0;
   int    degen_reset_consecutive_count_ = 5;
   int    degen_consecutive_hits_ = 0;
+  bool   gicp_freeze_trials_latched_ = false;
+  bool   gicp_rematch_trials_latched_ = false;
 
   // Restart geometry gate threshold on the weakest axis of the scan's
   // local-normal scatter matrix.

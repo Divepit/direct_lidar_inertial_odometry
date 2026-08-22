@@ -61,6 +61,7 @@ LsqRegistration<PointTarget, PointSource>::LsqRegistration() {
   lm_max_iterations_ = 15;
   lm_init_lambda_factor_ = 1e-9;
   lm_lambda_ = -1.0;
+  freeze_trial_correspondences_ = true;
 
   final_hessian_.setIdentity();
   final_error_ = 0.;
@@ -92,6 +93,11 @@ void LsqRegistration<PointTarget, PointSource>::setInitialLambdaFactor(double in
 template <typename PointTarget, typename PointSource>
 void LsqRegistration<PointTarget, PointSource>::setDebugPrint(bool lm_debug_print) {
   lm_debug_print_ = lm_debug_print;
+}
+
+template <typename PointTarget, typename PointSource>
+void LsqRegistration<PointTarget, PointSource>::setFreezeTrialCorrespondences(bool freeze) {
+  freeze_trial_correspondences_ = freeze;
 }
 
 template <typename PointTarget, typename PointSource>
@@ -279,7 +285,11 @@ bool LsqRegistration<PointTarget, PointSource>::step_lm(Eigen::Isometry3d& x0,
     delta.translation() = d.tail<3>();
 
     const Eigen::Isometry3d xi = delta * x0;
-    const double yi = compute_error(xi);
+    // Fixed mode makes the trial objective consistent with the linearization;
+    // rematching mode retains the original ICP behavior for weak geometry.
+    const double yi = freeze_trial_correspondences_
+        ? compute_error_frozen(xi)
+        : compute_error(xi);
     if (!std::isfinite(yi)) {
       lm_lambda_ = std::min(kLambdaMax, std::max(2.0 * lm_lambda_, lm_lambda_ * nu));
       nu = std::min(2.0 * nu, 1e6);

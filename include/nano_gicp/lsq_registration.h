@@ -131,6 +131,7 @@ public:
   void setMaximumIterations(int iter);
   void setInitialLambdaFactor(double init_lambda_factor);
   void setDebugPrint(bool lm_debug_print);
+  void setFreezeTrialCorrespondences(bool freeze);
 
   const Eigen::Matrix<double, 6, 6>& getFinalHessian() const;
   double getFinalError() const;
@@ -171,6 +172,7 @@ protected:
   double lm_init_lambda_factor_;
   double lm_lambda_;
   bool lm_debug_print_;
+  bool freeze_trial_correspondences_;
 
   Eigen::Matrix<double, 6, 6> final_hessian_;
   double final_error_;

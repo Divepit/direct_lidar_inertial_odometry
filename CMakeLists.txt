@@ -151,3 +151,11 @@ endif()
 target_compile_options(dlio_odom_node PRIVATE ${OpenMP_FLAGS})
 
 target_compile_options(dlio_map_node PRIVATE ${OpenMP_FLAGS})
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_imu_timestamp_tracker
+    test/test_imu_timestamp_tracker.cpp
+  )
+  target_include_directories(test_imu_timestamp_tracker PRIVATE include)
+endif()

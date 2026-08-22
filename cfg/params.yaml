@@ -57,9 +57,10 @@
     odom/gicp/rotationEpsilon: 0.001
 
     odom/gicp/initLambdaFactor: 1e-6
+    odom/gicp/freezeTrialTriggerTranslation: 0.10
     odom/gicp/degeneracy/enabled: true
-    odom/gicp/degeneracy/trans_eig_abs_threshold: 50.0
-    odom/gicp/degeneracy/reset_consecutive_count: 10
+    odom/gicp/degeneracy/trans_eig_abs_threshold: 100.0
+    odom/gicp/degeneracy/reset_consecutive_count: 0
 
     odom/restart/geometry_gate/enabled: true
     odom/restart/geometry_gate/min_eigenvalue: 100.0
